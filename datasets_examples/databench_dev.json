@@ -1,0 +1,3 @@
+{"question": "Is the most favorited author mainly communicating in Spanish?", "answer": "True", "type": "boolean", "columns_used": "['favorites', 'lang']", "column_types": "['category', 'category']", "sample_answer": "True", "dataset": "050_ING"}
+{"question": "Does the author with the longest name post mainly original content?", "answer": "True", "type": "boolean", "columns_used": "['author_name', 'type']", "column_types": "['category', 'category']", "sample_answer": "False", "dataset": "050_ING"}
+{"question": "Is there an author who received no retweets for any of their posts?", "answer": "True", "type": "boolean", "columns_used": "['author_name', 'retweets']", "column_types": "['category', 'number[uint8]']", "sample_answer": "True", "dataset": "050_ING"}

@@ -14,14 +14,16 @@ pip install -r requirements.txt
 
 We support the following datasets:
 
-- WTQ, TAT, CRT, SciTab, DataBench
+- [WTQ](https://github.com/ppasupat/WikiTableQuestions/tree/master/data), [TAT](https://github.com/NExTplusplus/TAT-QA/tree/master/dataset_raw), [CRT](https://github.com/zzh-SJTU/CRT-QA), [SciTab](https://github.com/XinyuanLu00/SciTab/tree/main/dataset), [DataBench](https://huggingface.co/datasets/cardiffnlp/databench/tree/main)
 - Each instance in the dataset should contain at least following fields:
 
 ```
-{"statement": a question to be answered or a statement to be validate in string format,
- "table_text": a table in list format containing lists of rows.
- "answer": a list containing answer(s) to a question.}
+{"statement": a question or a statement in string format,
+ "table_text": a table in list format containing lists of rows,
+ "answer": a list containing answer(s).}
 ```
+
+You can find examples in the folder `datasets_examples`.
 
 ### Code Structure
 
@@ -29,11 +31,11 @@ We support the following datasets:
 
 `code/agent.py`: script containing classes and functions for controlling agent behaviours.
 
-`code/llm.py`: script for LLM calling.
+`code/llm.py`: script for LLMs calling.
 
-`code/tot.py`: script containing functions and prompts for using llm as evaluators to select best actions.
+`code/tot.py`: script containing functions and prompts for using LLM to select best actions.
 
-`code/utils.py`: scripts containing helpful functions for running experiments.
+`code/utils.py`: script containing helpful functions for running experiments.
 
 `code/prompts_table.py`: prompts used in our experiments.
 
@@ -43,24 +45,22 @@ We support the following datasets:
 
 #### run with closed-sourced gpt models
 
-1. Set the plan and coding models to the preferred gpt models, e.g., gpt-35-turbo.
-2. In the `agent.py`, add important information for `load_gpt_azure ` and comment out line 73.
-3. run the following command.
+1. In the `agent.py`, add information for `load_gpt_azure ` and comment out line 73.
+2. run the following command.
    ```
-   python tqa.py --plan_model_name  name of the planning model \
-   --code_model_name  name of the coding model  \
-   --dataset_path  path to the dataset \
-   --max_step  maximum iteration number \
-   --task  the target tqa task name \
+   python tqa.py --plan_model_name  gpt-35-turbo \
+   --code_model_name  gpt-35-turbo  \
+   --dataset_path  ../datasets_examples/tat.jsonl \
+   --task  tat
    ```
 
 #### run with open-source models
 
-1. Set up the coding agent using SGLang. Please find [details](https://docs.sglang.ai/backend/send_request.html#Launch-A-Server) here.
+1. Set up the coding agent with SGLang. See [details](https://docs.sglang.ai/backend/send_request.html#Launch-A-Server).
    ```
    python -m sglang.launch_server --model-path  path_to_the_coding_model --port  port_number
    ```
-2. run the command in the step 3 above and specify port number `--code_endpoint  port_number `
+2. run the command in the step 2 above and specify port number `--code_endpoint  port_number `
 
 ### Evaluations
 
