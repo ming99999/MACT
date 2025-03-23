@@ -23,7 +23,7 @@ You should have received a copy of the GNU Affero General Public License
 
 along with this program.  If not, see <https://www.gnu.org/licenses/>. 
 
-""" 
+"""
 
 import os
 import joblib
@@ -152,6 +152,32 @@ def parse_action(string):
         return None, None
 
 
+def extract_from_outputs(outputs, num_choices):
+    try:
+        extracted = re.findall(r'The best path is \d', outputs) + \
+            re.findall(r'The best result is \d', outputs)
+        if len(extracted) > 0:
+            target_choice = int(re.findall(r'\d', extracted[0])[0])-1
+        else:
+            target_choice = int(random.sample(num_choices, k=1)[0])
+        # make sure target choice is within the num_choices
+        if not target_choice < num_choices:
+            target_choice = int(random.sample(num_choices, k=1)[0])
+    except:
+        target_choice = 0
+    return target_choice
 
 
-
+def get_databench_table(table_dir, dataset, k=2):
+    df = pd.read_parquet(
+        f"{table_dir}/{dataset}/all.parquet", engine='pyarrow')
+    df_path = f"{table_dir}/{dataset}/all.parquet"
+    header = df.columns.tolist()
+    val_dict = {h: df[h].tolist() for h in header}
+    vals = [val_dict[h][:k] for h in header]
+    vals = [[col[i] for col in vals] for i in range(k)]
+    vals.insert(0, header)
+    table = table_linear(vals, num_row=None)
+    x = len(df) - 3
+    table += f"...[remaining {x} rows unshown due to large table size]..."
+    return table, vals,  df_path

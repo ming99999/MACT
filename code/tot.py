@@ -23,7 +23,7 @@ You should have received a copy of the GNU Affero General Public License
 
 along with this program.  If not, see <https://www.gnu.org/licenses/>. 
 
-""" 
+"""
 
 import re
 import string
@@ -62,21 +62,21 @@ score_prompt = '''Analyze the following passage, then at the last line conclude 
 '''
 
 
-_ = load_dotenv(find_dotenv())  
-token_provider = get_bearer_token_provider(
-    DefaultAzureCredential(
-        exclude_managed_identity_credential=True
-    ), "https://cognitiveservices.azure.com/.default"
-)
-client = AzureOpenAI(
-    azure_ad_token_provider=token_provider,
-    azure_endpoint=""
-)
+# _ = load_dotenv(find_dotenv())
+# token_provider = get_bearer_token_provider(
+#     DefaultAzureCredential(
+#         exclude_managed_identity_credential=True
+#     ), "https://cognitiveservices.azure.com/.default"
+# )
+# client = AzureOpenAI(
+#     azure_ad_token_provider=token_provider,
+#     azure_endpoint=""
+# )
 
 
-all_input_token, all_output_token = 0, 0
+# all_input_token, all_output_token = 0, 0
 
-def get_completion(prompt, model="gpt-4-turbo", client=client):
+def get_completion(prompt, model="gpt-4-turbo", client=None):
     print(f"using {model}!")
     messages = [{"role": "user", "content": prompt}]
     response = client.chat.completions.create(

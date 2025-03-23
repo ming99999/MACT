@@ -23,14 +23,14 @@ You should have received a copy of the GNU Affero General Public License
 
 along with this program.  If not, see <https://www.gnu.org/licenses/>. 
 
-""" 
+"""
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from mistral_common.protocol.instruct.request import ChatCompletionRequest
-from mistral_common.protocol.instruct.messages import UserMessage
-from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
-from mistral_inference.generate import generate
-from mistral_inference.transformer import Transformer
+# from mistral_common.protocol.instruct.request import ChatCompletionRequest
+# from mistral_common.protocol.instruct.messages import UserMessage
+# from mistral_common.tokens.tokenizers.mistral import MistralTokenizer
+# from mistral_inference.generate import generate
+# from mistral_inference.transformer import Transformer
 import random
 from typing import Union, Literal
 from vllm import SamplingParams
@@ -42,20 +42,20 @@ transformers.set_seed(42)
 random.seed(42)
 
 
-def mistral_inference(model, tokenizer, prompts):
-    results = []
-    for prompt in prompts:
-        completion_request = ChatCompletionRequest(
-            messages=[UserMessage(content=prompt["content"])])
+# def mistral_inference(model, tokenizer, prompts):
+#     results = []
+#     for prompt in prompts:
+#         completion_request = ChatCompletionRequest(
+#             messages=[UserMessage(content=prompt["content"])])
 
-        tokens = tokenizer.encode_chat_completion(completion_request).tokens
+#         tokens = tokenizer.encode_chat_completion(completion_request).tokens
 
-        out_tokens, _ = generate([tokens], model, max_tokens=2000, temperature=0,
-                                 eos_id=tokenizer.instruct_tokenizer.tokenizer.eos_id)
-        result = tokenizer.decode(out_tokens[0])
-        results.append(result)
+#         out_tokens, _ = generate([tokens], model, max_tokens=2000, temperature=0,
+#                                  eos_id=tokenizer.instruct_tokenizer.tokenizer.eos_id)
+#         result = tokenizer.decode(out_tokens[0])
+#         results.append(result)
 
-    return results
+#     return results
 
 
 class OpenSourceLLM:
@@ -111,12 +111,12 @@ class OpenSourceLLM:
         return sequence_prob
 
     def __call__(self, prompt: str, num_return_sequences: int, return_prob: bool):
-        if "mistral" in self.model_name.lower():
-            # mistral nemo model
-            messages = [{"role": "user", "content": prompt}]
-            decoded = mistral_inference(self.model, self.tokenizer, messages)
+        # if "mistral" in self.model_name.lower():
+        #     # specifically for mistral nemo model
+        #     messages = [{"role": "user", "content": prompt}]
+        #     decoded = mistral_inference(self.model, self.tokenizer, messages)
 
-        elif "qwen" in self.model_name.lower() or "phi" in self.model_name.lower():
+        if "qwen" in self.model_name.lower() or "phi" in self.model_name.lower() or "mistral" in self.model_name.lower():
             decoded = []
             if return_prob:
                 sampling_params = SamplingParams(
@@ -141,17 +141,17 @@ class OpenSourceLLM:
         return decoded
 
     def encode(self, prompt: str):
-        if "mistral" in self.model_name.lower():
-            messages = [{"role": "user", "content": prompt}]
-            encodeds = self.tokenizer.apply_chat_template(
-                messages, return_tensors="pt")  # (1,len(input_ids))
-        else:
-            messages = [{"role": "user", "content": prompt}]
-            text = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            )
-            encodeds = self.tokenizer([text], return_tensors="pt").input_ids
+        # if "mistral" in self.model_name.lower():
+        #     messages = [{"role": "user", "content": prompt}]
+        #     encodeds = self.tokenizer.apply_chat_template(
+        #         messages, return_tensors="pt")  # (1,len(input_ids))
+
+        messages = [{"role": "user", "content": prompt}]
+        text = self.tokenizer.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        encodeds = self.tokenizer([text], return_tensors="pt").input_ids
 
         return len(encodeds[0])

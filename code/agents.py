@@ -23,7 +23,7 @@ You should have received a copy of the GNU Affero General Public License
 
 along with this program.  If not, see <https://www.gnu.org/licenses/>. 
 
-""" 
+"""
 
 import re
 import string
@@ -51,13 +51,14 @@ from prompts_table import (DIRECT_AGENT, NUMERICAL_OPERATION_PROMPT,
                            react_agent_prompt_databench, global_plan_prompt)
 from sglang import assistant, function, gen, user
 from tot import llm_reward, vote_prompt_as
-from util import (extract_from_outputs, parse_action, table2df,
-                  table_linear)
+from utils import (extract_from_outputs, parse_action, table2df,
+                   table_linear)
 
 all_input_token, all_output_token = 0, 0
 
+
 def load_gpt_azure():
-    _ = load_dotenv(find_dotenv())  
+    _ = load_dotenv(find_dotenv())
     token_provider = get_bearer_token_provider(
         DefaultAzureCredential(
             exclude_managed_identity_credential=True
@@ -69,8 +70,7 @@ def load_gpt_azure():
         azure_endpoint="")
     return client
 
-
-# client = load_gpt_azure()  
+# client = load_gpt_azure()
 
 
 def get_completion(prompt, client, n, model="gpt-35-turbo"):
@@ -100,15 +100,14 @@ def table_operation(s, instruction, table_df):
     prompt = TABLE_OPERATION_PROMPT.format(
         instruction=instruction, table_df=table_df, examples=TABLE_OPERATION_EXAMPLE)
     s += user(prompt)
-    s += assistant(gen("result", max_tokens=4000, temperature=0.6))
+    s += assistant(gen("result", max_tokens=2000, temperature=0.6))
 
 
 @function
 def code_revise(s, current_error, extracted_code, table_df):
     prompt = f"You are an expert in revising code. The following code results in an error when executing on the table dataframe (the dataframe only shows the first two records of original data due to its large size). Please revise the code to address the error and only return the revised code in one python code block. \n Table dataframe: {table_df}\n Erroneous code: {extracted_code}\n Error message: {current_error}\n Revised code:"
-    # print(prompt)
     s += user(prompt)
-    s += assistant(gen("result", max_tokens=4000, temperature=0.6))
+    s += assistant(gen("result", max_tokens=2000, temperature=0.6))
 
 
 @function
@@ -138,7 +137,6 @@ def direct_code(s, prompt):
 
 
 def validate_gloabl_result(executed_results, threshold=3):
-    # print(Counter(executed_results))
     answer = Counter(executed_results).most_common(1)[0][0]
     frequency = Counter(executed_results).most_common(1)[0][1]
     if frequency >= threshold and answer != "":
@@ -474,10 +472,8 @@ class ReactAgent:
             else:
                 codes = self.prompt_agent_gpt_coder(prompt)
             for code_strings in codes:
-                print(code_strings)
                 result, rows = self.code_extract_calculator(
                     code_strings, table_df, original_df)
-                print(result)
                 if result != "" and rows != []:
                     try:
                         result = result.strip()
@@ -855,12 +851,10 @@ class ReactAgent:
                                     pass
                         elif action_type == "Operate":
                             recent_table_df = self.table_dfs[-1]
-                            new_ob, tar_df = self.calculator_tool(
+                            new_ob = self.calculator_tool(
                                 argument, recent_table_df=recent_table_df)
                             if new_ob != "":
                                 observation = f"Observation {self.step_n}: {new_ob}"
-                            if tar_df != "":
-                                self.table_dfs.append(tar_df)
 
                         if observation != "":
                             self.scratchpad += thought + "\n"

@@ -30,14 +30,13 @@ import traceback
 import json
 import argparse
 import sglang as sgl
-from agent import ReactAgent
+from agents import ReactAgent
 from sglang.lang.chat_template import (ChatTemplate, get_chat_template,
                                        register_chat_template)
 from transformers import AutoTokenizer
-from util import summarize_react_trial, table2df
-from databench_utils import get_databench_table
+from utils import summarize_react_trial, table2df
+from utils import get_databench_table
 from vllm import LLM
-from tqdm import tqdm
 
 
 def write_to_file(path, agent, idx, new_table_dataset, given_plan):
@@ -76,7 +75,7 @@ def main(args):
     codeagent_endpoint = None
     if not "gpt" in args.plan_model_name:
         tokenizer = AutoTokenizer.from_pretrained(
-            args.plan_model_name, cache_dir=args.cache_dir)
+            args.model_path)
         model = LLM(model=args.model_path)
         if not "gpt" in args.code_model_name:
             codeagent_endpoint = sgl.RuntimeEndpoint(
@@ -98,11 +97,11 @@ def main(args):
     trial = 0
     agent_cls = ReactAgent
     agents = [agent_cls(question=row["question"] if "question" in list(row.keys()) else row["statement"],
-              table=get_databench_table(row["table_text"])[
+              table=get_databench_table(args.table_dir, row["dataset"])[
         0] if args.task == "databench" else row["table_text"],
-        table_df=table2df(get_databench_table(row["table_text"])[
+        table_df=table2df(get_databench_table(args.table_dir, row["dataset"])[
             1]) if args.task == "databench" else table2df(row["table_text"]),
-        df_path=get_databench_table(row["table_text"])[
+        df_path=get_databench_table(args.table_dir, row["dataset"])[
         2] if args.task == "databench" else None,
         context=row["text"] if "text" in list(row.keys()) else "",
         key=row["answer"] if "answer" in list(row.keys()) else "none",
@@ -161,42 +160,43 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--plan_model_name',
-                        default="", description="name of the planning model.")
+                        default="", help="name of the planning model.")
     parser.add_argument('--code_model_name',
-                        default="", description="name of the coding model.")
-    parser.add_argument('--cache_dir', default="", description="cache dir to load a model from.")
+                        default="", help="name of the coding model.")
+    parser.add_argument('--cache_dir', default="",
+                        help="cache dir to load a model from.")
     parser.add_argument('--model_path', type=str,
-                        default="", description="model path to the planning model.")
+                        default="", help="model path to the planning model.")
     parser.add_argument('--dataset_path', type=str,
-                        default="../datasets/wtq.jsonl", description="dataset path.")
+                        default="../datasets/wtq.jsonl", help="dataset path.")
+    parser.add_argument('--table_dir', type=str,
+                        default="../datasets/databench/data", help="databench table directory")
     parser.add_argument('--max_step', type=int, default=6,
-                        description="maximum number for valid iterations.")
+                        help="maximum number for valid iterations.")
     parser.add_argument('--max_actual_step', type=int, default=6,
-                        description="maximum number for all iterations.")
+                        help="maximum number for all iterations.")
     parser.add_argument('--task', type=str, default="wtq",
                         choices=["wtq", "crt", "tat", "scitab", "databench"])
     parser.add_argument('--as_reward', type=str, default="consistency",
                         choices=["consistency", "llm", "logp", "rollout", "combined"])
     parser.add_argument('--long_table_op', type=str, default="ignore",
                         choices=["code-agent", "ignore", "short-table"],
-                        description="methods to shorten long table. default passing the whole table.")
+                        help="methods to shorten long table. default passing the whole table.")
     parser.add_argument('--plan_sample', type=int, default=5,
-                        description="number of actions sampled from a planning model.")
+                        help="number of actions sampled from a planning model.")
     parser.add_argument('--code_sample', type=int, default=5,
-                        description="numbers of trails for generating codes to address an action.")
+                        help="numbers of trails for generating codes to address an action.")
     parser.add_argument('--use_pre_answer', type=bool, default=True,
-                        description="whether use answers from the first iteration as final answers.")
+                        help="whether use answers from the first iteration as final answers.")
     parser.add_argument('--answer_aggregate', type=float, default=1.,
-                        description="agreement threshold for answer selection of use_pre_answer.")
+                        help="agreement threshold for answer selection of use_pre_answer.")
     parser.add_argument('--direct_reasoning', action='store_true',
-                        description="whether to use cot and symbolic reasoning directly or not.")
+                        help="whether to use cot and symbolic reasoning directly or not.")
     parser.add_argument('--without_tool', action='store_true')
     parser.add_argument('--code_endpoint', default="11039",
-                        description="coding agent port.")
+                        help="coding agent port.")
     parser.add_argument('--debugging', action='store_true')
     parser.add_argument('--code_as_observation', action='store_true',
-                        description="only use code as the final observations or not.")
+                        help="only use code as the final observations or not.")
     args = parser.parse_args()
     main(args)
-
-
