@@ -47,7 +47,6 @@ from prompts_table import (DIRECT_AGENT, NUMERICAL_OPERATION_PROMPT,
                            react_agent_prompt_wtq, NUMERICAL_OPERATION_PROMPT_LONG_TABLE,
                            NUMERICAL_OPERATION_PROMPT_LONG_TABLE_GLOBAL,
                            react_agent_prompt_databench, global_plan_prompt)
-from sglang import assistant, function, gen, user
 from tot import llm_reward, vote_prompt_as
 from utils import (extract_from_outputs, parse_action, table2df,
                    table_linear)
@@ -77,45 +76,51 @@ def get_completion(prompt, model="gpt-35-turbo", n=1, max_tokens=400, temperatur
     return results
 
 
-@function
-def table_operation(s, instruction, table_df):
+def table_operation_unified(instruction, table_df):
+    """Unified table operation function without SGLang."""
     prompt = TABLE_OPERATION_PROMPT.format(
         instruction=instruction, table_df=table_df, examples=TABLE_OPERATION_EXAMPLE)
-    s += user(prompt)
-    s += assistant(gen("result", max_tokens=2000, temperature=0.6))
+    # Use a default model for table operations
+    llm = UnifiedLLM("gpt-3.5-turbo")  # You can make this configurable
+    result = llm(prompt, max_tokens=2000, temperature=0.6)
+    return result[0] if result else ""
 
 
-@function
-def code_revise(s, current_error, extracted_code, table_df):
+def code_revise_unified(current_error, extracted_code, table_df):
+    """Unified code revision function without SGLang."""
     prompt = f"You are an expert in revising code. The following code results in an error when executing on the table dataframe (the dataframe only shows the first two records of original data due to its large size). Please revise the code to address the error and only return the revised code in one python code block. \n Table dataframe: {table_df}\n Erroneous code: {extracted_code}\n Error message: {current_error}\n Revised code:"
-    s += user(prompt)
-    s += assistant(gen("result", max_tokens=2000, temperature=0.6))
+    llm = UnifiedLLM("gpt-3.5-turbo")
+    result = llm(prompt, max_tokens=2000, temperature=0.6)
+    return result[0] if result else ""
 
 
-@function
-def numerical_operation(s, instruction, table_df):
+def numerical_operation_unified(instruction, table_df):
+    """Unified numerical operation function without SGLang."""
     prompt = NUMERICAL_OPERATION_PROMPT.format(
         instruction=instruction, table_df=table_df, examples=NUMERICAL_OPERATION_EXAMPLE)
-    s += user(prompt)
-    s += assistant(gen("result", max_tokens=4000, temperature=0.6))
+    llm = UnifiedLLM("gpt-3.5-turbo")
+    result = llm(prompt, max_tokens=4000, temperature=0.6)
+    return result[0] if result else ""
 
 
-@function
-def numerical_operation_long_table(s, instruction, table_df, global_planning=False):
+def numerical_operation_long_table_unified(instruction, table_df, global_planning=False):
+    """Unified long table numerical operation function without SGLang."""
     if global_planning:
         prompt = NUMERICAL_OPERATION_PROMPT_LONG_TABLE_GLOBAL.format(
             instruction=instruction, table_df=table_df, examples=NUMERICAL_OPERATION_EXAMPLE_LONG_TABLE_GLOBAL)
     else:
         prompt = NUMERICAL_OPERATION_PROMPT_LONG_TABLE.format(
             instruction=instruction, table_df=table_df, examples=NUMERICAL_OPERATION_EXAMPLE_LONG_TABLE)
-    s += user(prompt)
-    s += assistant(gen("result", max_tokens=4000, temperature=0.6))
+    llm = UnifiedLLM("gpt-3.5-turbo")
+    result = llm(prompt, max_tokens=4000, temperature=0.6)
+    return result[0] if result else ""
 
 
-@function
-def direct_code(s, prompt):
-    s += user(prompt)
-    s += assistant(gen("result", max_tokens=4000, temperature=0.6))
+def direct_code_unified(prompt):
+    """Unified direct code function without SGLang."""
+    llm = UnifiedLLM("gpt-3.5-turbo")
+    result = llm(prompt, max_tokens=4000, temperature=0.6)
+    return result[0] if result else ""
 
 
 def validate_gloabl_result(executed_results, threshold=3):
@@ -442,28 +447,11 @@ class ReactAgent:
                 results.append(result)
 
         else:
-            if "gpt" not in self.code_model_name:
-                # code generation batching
-                batch_data = [{"instruction": instruction, "table_df": table_df}
-                              for i in range(max_attempt)]
-                if self.task != "databench":
-                    states = numerical_operation.run_batch(
-                        batch_data, progress_bar=True, backend=self.codeagent_endpoint)
-                else:
-                    if not global_planning:
-                        states = numerical_operation_long_table.run_batch(
-                            batch_data, progress_bar=True, backend=self.codeagent_endpoint)
-                    else:
-                        batch_data = [{"instruction": instruction, "table_df": self.table_df, "global_planning": True}
-                                      for i in range(max_attempt)]
-                        states = numerical_operation_long_table.run_batch(
-                            batch_data, progress_bar=True, backend=self.codeagent_endpoint)
-                code_strings = [s["result"] for s in states]
-
-            else:
-                prompt = NUMERICAL_OPERATION_PROMPT.format(
-                    instruction=instruction, table_df=table_df, examples=NUMERICAL_OPERATION_EXAMPLE)
-                code_strings = self.prompt_agent_gpt_coder(prompt)
+            # Use unified approach for all models
+            prompt = NUMERICAL_OPERATION_PROMPT.format(
+                instruction=instruction, table_df=table_df, examples=NUMERICAL_OPERATION_EXAMPLE)
+            code_strings = [self.code_llm(prompt, num_return_sequences=1, return_prob=False)[0] 
+                           for _ in range(max_attempt)]
 
             for code_string in code_strings:
                 result, rows, error, extracted_code = self.code_extract_calculator(
@@ -744,8 +732,7 @@ class ReactAgent:
                 item) for item in llm_sampled]
             prompt = self.code_prompt.format(
                 examples=self.code_examples, table=self.table_df, question=self.question, context=self.context)
-            code_sampled = [direct_code.run(prompt, backend=self.codeagent_endpoint)[
-                "result"] for i in range(self.code_sample)]
+            code_sampled = [direct_code_unified(prompt) for i in range(self.code_sample)]
             code_sampled_ = [self.get_answer_from_code(
                 item) for item in code_sampled]
             self.llm_sampled = [item for item in llm_sampled_ if item != ""]

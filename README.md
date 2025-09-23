@@ -45,22 +45,29 @@ You can find examples in the folder `datasets_examples`.
 
 #### run with closed-sourced gpt models
 
-1. In the `agent.py`, add information for `load_gpt_azure ` and comment out line 73.
-2. run the following command.
+#### Run with OpenAI GPT Models
+
+1. Configure your `.env` file with OpenAI API credentials
+2. Run the evaluation. Example command:
    ```
-   python tqa.py --plan_model_name  gpt-35-turbo \
-   --code_model_name  gpt-35-turbo  \
+   python tqa.py --plan_model_name  gpt-3.5-turbo \
+   --code_model_name  gpt-3.5-turbo  \
    --dataset_path  ../datasets_examples/tat.jsonl \
    --task  tat
    ```
 
-#### run with open-source models
+#### Run with Open-Source Models via RunPod
 
-1. Set up the coding agent with SGLang. See [details](https://docs.sglang.ai/backend/send_request.html#Launch-A-Server).
+The unified LLM interface automatically routes open-source models to your RunPod vLLM endpoint:
+
+1. Configure your `.env` file with RunPod endpoint details
+2. Run with open-source models:
    ```
-   python -m sglang.launch_server --model-path  path_to_the_coding_model --port  port_number
+   python tqa.py --plan_model_name  Qwen/Qwen3-8B \
+   --code_model_name  Qwen/Qwen3-8B  \
+   --dataset_path  ../datasets_examples/tat.jsonl \
+   --task  tat
    ```
-2. run the command in the step 2 above and specify port number `--code_endpoint  port_number `
 
 ### Evaluations
 

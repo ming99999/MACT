@@ -29,10 +29,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import traceback
 import json
 import argparse
-import sglang as sgl
 from agents import ReactAgent
-from sglang.lang.chat_template import (ChatTemplate, get_chat_template,
-                                       register_chat_template)
 from utils import summarize_react_trial, table2df
 from utils import get_databench_table
 from config import llm_config
@@ -54,36 +51,17 @@ def write_to_file(path, agent, idx, new_table_dataset, given_plan):
 # ===================================================
 
 
-def load_codellama_template(endpoint2):
-    codellama_template = ChatTemplate(
-        name="codellama",
-        default_system_prompt=(
-            "You are an intelligent programming assistant."
-        ),
-        role_prefix_and_suffix={
-            "system": ("### System Promopt\n", "\n"),
-            "user": ("### User Message\n", "\n"),
-            "assistant": ("### Assistant", ""),
-        }
-    )
-    register_chat_template(codellama_template)
-    endpoint2.chat_template = get_chat_template("codellama")
+# SGLang template functionality removed - unified LLM interface handles all chat templates
 
 
 def main(args):
     codeagent_endpoint = None
     
     # Simplified model setup - no need for separate vLLM/transformers loading
-    # The unified LLM interface handles model routing automatically
+    # Unified LLM interface handles all model routing automatically
     model = None  # Not needed with unified approach
     tokenizer = None  # Not needed with unified approach
-    
-    # SGLang endpoint setup (if needed for batch processing)
-    if not llm_config.is_gpt_model(args.code_model_name):
-        codeagent_endpoint = sgl.RuntimeEndpoint(
-            f"http://localhost:{args.code_endpoint}")
-        if "codellama" in args.code_model_name.lower():
-            load_codellama_template(codeagent_endpoint)
+    codeagent_endpoint = None  # SGLang no longer needed
 
     with open(args.dataset_path, "r") as f:
         table_dataset = [json.loads(line) for line in f]
@@ -187,8 +165,6 @@ if __name__ == '__main__':
     parser.add_argument('--direct_reasoning', action='store_true',
                         help="whether to use cot and symbolic reasoning directly or not.")
     parser.add_argument('--without_tool', action='store_true')
-    parser.add_argument('--code_endpoint', default="11039",
-                        help="coding agent port.")
     parser.add_argument('--debugging', action='store_true')
     parser.add_argument('--code_as_observation', action='store_true',
                         help="only use code as the final observations or not.")

@@ -209,3 +209,6 @@ __marimo__/
 # Lightning AI
 .lightning_studio
 .qoder
+
+# test
+results/

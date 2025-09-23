@@ -29,10 +29,8 @@ safetensors==0.4.3
 scipy==1.13.1
 seaborn==0.13.2
 sentencepiece==0.2.0
-sglang==0.1.16
 tqdm==4.66.4
 transformers==4.44.1 
 typing-inspect==0.9.0
 typing_extensions==4.11.0
-vllm==0.4.2
 wikipedia==1.4.0
