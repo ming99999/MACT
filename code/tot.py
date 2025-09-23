@@ -30,26 +30,8 @@ import string
 import os
 from typing import List, Union, Literal
 from enum import Enum
-import tiktoken
-import pandas as pd
-from langchain import OpenAI, Wikipedia
-from langchain.llms.base import BaseLLM
-from langchain.chat_models import ChatOpenAI
-from langchain.agents import Tool
-from langchain.chat_models.base import BaseChatModel
-from langchain.schema import (
-    SystemMessage,
-    HumanMessage,
-    AIMessage,
-)
-from langchain.agents.react.base import DocstoreExplorer
-from langchain.docstore.base import Docstore
-from langchain.prompts import PromptTemplate
-from llm import OpenSourceLLM
-
-from dotenv import load_dotenv, find_dotenv
-from azure.identity import get_bearer_token_provider, DefaultAzureCredential
-from openai import AzureOpenAI
+from llm import UnifiedLLM
+from config import llm_config
 
 
 vote_prompt_as = '''Given a question, a table, past reasonings and several current intermediate reasoning paths, decide which current reasoning path is the most promising in terms of solving the question. Analyze each path in detail, then conclude in the last line "The best path is {s}", where s the integer id of the path.
@@ -77,34 +59,36 @@ score_prompt = '''Analyze the following passage, then at the last line conclude 
 # all_input_token, all_output_token = 0, 0
 
 def get_completion(prompt, model="gpt-4-turbo", client=None):
+    """Get completion using unified LLM interface."""
     print(f"using {model}!")
-    messages = [{"role": "user", "content": prompt}]
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0.,
-        max_tokens=1000,
-        top_p=0.95,
-        frequency_penalty=0,
-        presence_penalty=0,
-        stop=None
-    )
-    input_token_num = response.usage.prompt_tokens
-    output_token_num = response.usage.completion_tokens
-    return response.choices[0].message.content, input_token_num, output_token_num
+    
+    # Use unified LLM approach
+    llm = UnifiedLLM(model)
+    response = llm(prompt, num_return_sequences=1, max_tokens=1000, temperature=0.0)
+    
+    # Simplified token counting
+    input_token_num = len(prompt) // 4
+    output_token_num = len(response[0]) // 4 if response else 0
+    
+    return response[0] if response else "", input_token_num, output_token_num
 
 
 def llm_reward(reasoning_paths, vote_prompt, model_type="closed", tokenizer=None, model_name="", model=None):
+    """Get LLM reward using unified interface."""
     prompt = vote_prompt + reasoning_paths
+    
     if model_type == "closed":
         outputs, input_tokens_num, output_tokens_num = get_completion(prompt)
     elif model_type == "open":
-        assert tokenizer, model
-        llm = OpenSourceLLM(
-            model_name=model_name,
-            model=None,
-            vllm=model.vllm,
-            tokenizer=tokenizer
-        )
+        # Use unified LLM for open-source models
+        llm = UnifiedLLM(model_name)
         outputs = llm(prompt, num_return_sequences=1, return_prob=False)
-    return outputs, "", ""
+        outputs = outputs[0] if outputs else ""
+        input_tokens_num = len(prompt) // 4
+        output_tokens_num = len(outputs) // 4
+    else:
+        outputs = ""
+        input_tokens_num = 0
+        output_tokens_num = 0
+        
+    return outputs, input_tokens_num, output_tokens_num

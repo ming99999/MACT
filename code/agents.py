@@ -30,8 +30,6 @@ import string
 from collections import Counter, OrderedDict, defaultdict
 
 import pandas as pd
-from azure.identity import DefaultAzureCredential, get_bearer_token_provider
-from dotenv import find_dotenv, load_dotenv
 from fewshots_table import (DEMO_CRT, DEMO_CRT_DIRECT, DEMO_SCITAB,
                             DEMO_SCITAB_DIRECT, DEMO_TAT, DEMO_TAT_DIRECT,
                             DEMO_WTQ, DEMO_WTQ_DIRECT,
@@ -41,8 +39,8 @@ from fewshots_table import (DEMO_CRT, DEMO_CRT_DIRECT, DEMO_SCITAB,
                             NUMERICAL_OPERATION_EXAMPLE_LONG_TABLE_GLOBAL)
 from langchain import Wikipedia
 from langchain.agents.react.base import DocstoreExplorer
-from llm import OpenSourceLLM
-from openai import AzureOpenAI
+from llm import UnifiedLLM, get_completion
+from config import llm_config
 from prompts_table import (DIRECT_AGENT, NUMERICAL_OPERATION_PROMPT,
                            TABLE_OPERATION_PROMPT, react_agent_prompt_crt,
                            react_agent_prompt_scitab, react_agent_prompt_tat,
@@ -57,42 +55,26 @@ from utils import (extract_from_outputs, parse_action, table2df,
 all_input_token, all_output_token = 0, 0
 
 
-def load_gpt_azure():
-    _ = load_dotenv(find_dotenv())
-    token_provider = get_bearer_token_provider(
-        DefaultAzureCredential(
-            exclude_managed_identity_credential=True
-        ),
-    )
-    client = AzureOpenAI(
-        api_version="",
-        azure_ad_token_provider=token_provider,
-        azure_endpoint="")
-    return client
-
-# client = load_gpt_azure()
+def load_llm_client(model_name: str):
+    """Load appropriate LLM client based on model name."""
+    return llm_config.get_client_for_model(model_name)
 
 
-def get_completion(prompt, client, n, model="gpt-35-turbo"):
+def get_completion(prompt, model="gpt-35-turbo", n=1, max_tokens=400, temperature=0.6):
+    """Get completion using unified LLM interface."""
     global all_input_token, all_output_token
-    messages = [{"role": "user", "content": prompt}]
-    response = client.chat.completions.create(
-        model=model,
-        messages=messages,
-        temperature=0.6,
-        max_tokens=400,
-        top_p=0.95,
-        frequency_penalty=0,
-        presence_penalty=0,
-        n=n,
-        stop=None
-    )
-    input_token_num = response.usage.prompt_tokens
-    output_token_num = response.usage.completion_tokens
-    all_input_token += input_token_num
-    all_output_token += output_token_num
-    # print(all_input_token, all_output_token)
-    return [item.message.content for item in response.choices]
+    
+    # Use unified LLM approach
+    llm = UnifiedLLM(model)
+    results = llm(prompt, num_return_sequences=n, max_tokens=max_tokens, temperature=temperature)
+    
+    # Token counting is simplified - in production you might want more accurate counting
+    estimated_input_tokens = len(prompt) // 4
+    estimated_output_tokens = sum(len(result) // 4 for result in results)
+    all_input_token += estimated_input_tokens
+    all_output_token += estimated_output_tokens
+    
+    return results
 
 
 @function
@@ -174,19 +156,12 @@ class ReactAgent:
                  debugging=False
                  ) -> None:
 
-        vllm = model
-        if "gpt" not in plan_model_name:
-            self.llm = OpenSourceLLM(
-                model_name=plan_model_name,
-                model=model,
-                vllm=vllm,
-                tokenizer=tokenizer
-            )
-        if "gpt" in plan_model_name or "gpt" in code_model_name:
-            # self.client = load_gpt_azure()  too slow
-            self.client = client
-        else:
-            self.client = None
+        # Use unified LLM interface for all models
+        self.llm = UnifiedLLM(plan_model_name)
+        self.code_llm = UnifiedLLM(code_model_name) if code_model_name != plan_model_name else self.llm
+        
+        # Keep client for legacy compatibility where needed
+        self.client = llm_config.get_client_for_model(plan_model_name)
         self.tokenizer = tokenizer
         self.question = question
         self.table_string = table_linear(
@@ -297,12 +272,7 @@ class ReactAgent:
             # use one base model
             prompt = TABLE_OPERATION_PROMPT.format(
                 instruction=instruction, table_df=self.table_df, examples=TABLE_OPERATION_EXAMPLE)
-            messages = [{"role": "user", "content": prompt}]
-            if "gpt" not in self.code_model_name:
-                codes = self.llm(
-                    messages, num_return_sequences=max_attempt, return_prob=False)
-            else:
-                codes = self.prompt_agent_gpt_coder(prompt)
+            codes = self.llm(prompt, num_return_sequences=max_attempt, return_prob=False)
 
             for code_strings in codes:
                 rows = self.code_extract_retrieve(code_strings)
@@ -314,17 +284,11 @@ class ReactAgent:
                 results.append(result)
 
         else:
-            # code generation batching
-            if "gpt" not in self.code_model_name:
-                batch_data = [{"instruction": instruction,
-                               "table_df": self.table_df} for i in range(max_attempt)]
-                states = table_operation.run_batch(
-                    batch_data, progress_bar=True, backend=self.codeagent_endpoint)
-                code_strings = [s["result"] for s in states]
-            else:
-                prompt = TABLE_OPERATION_PROMPT.format(
-                    instruction=instruction, table_df=self.table_df, examples=TABLE_OPERATION_EXAMPLE)
-                code_strings = self.prompt_agent_gpt_coder(prompt)
+            # Use unified LLM for code generation
+            prompt = TABLE_OPERATION_PROMPT.format(
+                instruction=instruction, table_df=self.table_df, examples=TABLE_OPERATION_EXAMPLE)
+            code_strings = [self.code_llm(prompt, num_return_sequences=1, return_prob=False)[0] 
+                           for _ in range(max_attempt)]
 
             for code_string in code_strings:
                 rows = self.code_extract_retrieve(code_string)
@@ -465,12 +429,7 @@ class ReactAgent:
         if self.code_model_name == self.plan_model_name:
             prompt = NUMERICAL_OPERATION_PROMPT.format(
                 instruction=instruction, table_df=table_df, examples=NUMERICAL_OPERATION_EXAMPLE)
-            messages = [{"role": "user", "content": prompt}]
-            if "gpt" not in self.code_model_name:
-                codes = self.llm(
-                    messages, num_return_sequences=max_attempt, return_prob=False)
-            else:
-                codes = self.prompt_agent_gpt_coder(prompt)
+            codes = self.llm(prompt, num_return_sequences=max_attempt, return_prob=False)
             for code_strings in codes:
                 result, rows = self.code_extract_calculator(
                     code_strings, table_df, original_df)
@@ -878,12 +837,10 @@ class ReactAgent:
 
     def prompt_agent_gpt(self) -> str:
         prompt = self._build_agent_prompt()
-        preds = get_completion(prompt, client=self.client, n=self.plan_sample)
-        return preds
+        return get_completion(prompt, model=self.plan_model_name, n=self.plan_sample)
 
     def prompt_agent_gpt_coder(self, prompt) -> str:
-        preds = get_completion(prompt, client=self.client, n=self.code_sample)
-        return preds
+        return get_completion(prompt, model=self.code_model_name, n=self.code_sample)
 
     def global_planning(self, given_plan) -> None:
         if not given_plan:
@@ -917,12 +874,7 @@ class ReactAgent:
             table=self.table_string,
             context=self.context,
             question=self.question)
-        if "gpt" not in self.plan_model_name:
-            answer = self.llm(
-                prompt, num_return_sequences=self.plan_sample, return_prob=False)
-        else:
-            answer = get_completion(
-                prompt, client=self.client, n=self.plan_sample)
+        answer = self.llm(prompt, num_return_sequences=self.plan_sample, return_prob=False)
         answers = [ans.split(":")[-1].strip() for ans in answer]
         answer = Counter(answers).most_common(1)[0][0]
         return answer

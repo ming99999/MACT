@@ -33,10 +33,9 @@ import sglang as sgl
 from agents import ReactAgent
 from sglang.lang.chat_template import (ChatTemplate, get_chat_template,
                                        register_chat_template)
-from transformers import AutoTokenizer
 from utils import summarize_react_trial, table2df
 from utils import get_databench_table
-from vllm import LLM
+from config import llm_config
 
 
 def write_to_file(path, agent, idx, new_table_dataset, given_plan):
@@ -73,23 +72,18 @@ def load_codellama_template(endpoint2):
 
 def main(args):
     codeagent_endpoint = None
-    if not "gpt" in args.plan_model_name:
-        tokenizer = AutoTokenizer.from_pretrained(
-            args.model_path)
-        model = LLM(model=args.model_path)
-        if not "gpt" in args.code_model_name:
-            codeagent_endpoint = sgl.RuntimeEndpoint(
-                f"http://localhost:{args.code_endpoint}")
-            if "codellama" in args.code_model_name.lower():
-                load_codellama_template(codeagent_endpoint)
-    else:
-        model = None
-        tokenizer = None
-        if "gpt" not in args.code_model_name:
-            codeagent_endpoint = sgl.RuntimeEndpoint(
-                f"http://localhost:{args.code_endpoint}")
-            if "codellama" in args.code_model_name.lower():
-                load_codellama_template(codeagent_endpoint)
+    
+    # Simplified model setup - no need for separate vLLM/transformers loading
+    # The unified LLM interface handles model routing automatically
+    model = None  # Not needed with unified approach
+    tokenizer = None  # Not needed with unified approach
+    
+    # SGLang endpoint setup (if needed for batch processing)
+    if not llm_config.is_gpt_model(args.code_model_name):
+        codeagent_endpoint = sgl.RuntimeEndpoint(
+            f"http://localhost:{args.code_endpoint}")
+        if "codellama" in args.code_model_name.lower():
+            load_codellama_template(codeagent_endpoint)
 
     with open(args.dataset_path, "r") as f:
         table_dataset = [json.loads(line) for line in f]
@@ -102,7 +96,7 @@ def main(args):
         table_df=table2df(get_databench_table(args.table_dir, row["dataset"])[
             1]) if args.task == "databench" else table2df(row["table_text"]),
         df_path=get_databench_table(args.table_dir, row["dataset"])[
-        2] if args.task == "databench" else None,
+        2] if args.task == "databench" else "",
         context=row["text"] if "text" in list(row.keys()) else "",
         key=row["answer"] if "answer" in list(row.keys()) else "none",
         answer="",
@@ -110,8 +104,8 @@ def main(args):
         max_actual_steps=args.max_actual_step,
         plan_model_name=args.plan_model_name,
         code_model_name=args.code_model_name,
-        model=model,
-        tokenizer=tokenizer,
+        model=model,  # This can be None with unified approach
+        tokenizer=tokenizer,  # This can be None with unified approach
         task=args.task,
         codeagent_endpoint=codeagent_endpoint,
         as_reward=args.as_reward,
