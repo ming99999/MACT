@@ -220,6 +220,9 @@ class ReactAgent:
             elif task == "wtq":
                 self.react_examples = DEMO_WTQ
                 self.agent_prompt = react_agent_prompt_wtq
+            elif task == "mmqa":  # 새로 추가
+                self.react_examples = DEMO_WTQ  # WTQ와 유사한 형식 사용
+                self.agent_prompt = react_agent_prompt_wtq
             elif task == "databench":
                 self.react_examples = DEMO_DATABENCH
                 self.agent_prompt = react_agent_prompt_databench
