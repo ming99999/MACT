@@ -32,6 +32,8 @@ import pandas as pd
 import random
 import tiktoken
 import re
+import string
+from typing import List, Dict, Any, Tuple
 # random.seed(42)
 
 
@@ -181,3 +183,230 @@ def get_databench_table(table_dir, dataset, k=2):
     x = len(df) - 3
     table += f"...[remaining {x} rows unshown due to large table size]..."
     return table, vals,  df_path
+
+
+def load_dataset(file_path: str) -> List[Dict[str, Any]]:
+    """
+    Load TQA dataset from JSONL file.
+    
+    Args:
+        file_path: Path to the JSONL dataset file
+        
+    Returns:
+        List of dataset items
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return [json.loads(line) for line in f]
+    except json.JSONDecodeError:
+        # Fallback for JSON array format
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error loading dataset from {file_path}: {e}")
+            return []
+    except Exception as e:
+        print(f"Error loading dataset from {file_path}: {e}")
+        return []
+
+
+def save_results(results: List[Dict[str, Any]], output_path: str):
+    """
+    Save results to JSONL file.
+    
+    Args:
+        results: List of result dictionaries
+        output_path: Output file path
+    """
+    try:
+        with open(output_path, 'w', encoding='utf-8') as f:
+            for result in results:
+                f.write(json.dumps(result, ensure_ascii=False) + '\n')
+        print(f"Results saved to {output_path}")
+    except Exception as e:
+        print(f"Error saving results to {output_path}: {e}")
+
+
+def format_table_for_prompt(table_data) -> str:
+    """
+    Format table data for LLM prompt.
+    
+    Args:
+        table_data: Table data (can be list of lists, string, or dict)
+        
+    Returns:
+        Formatted table string
+    """
+    if isinstance(table_data, str):
+        return table_data
+    
+    elif isinstance(table_data, list):
+        # List of lists format
+        if table_data and isinstance(table_data[0], list):
+            # Convert to markdown table
+            lines = []
+            for i, row in enumerate(table_data):
+                line = "| " + " | ".join(str(cell) for cell in row) + " |"
+                lines.append(line)
+                if i == 0:  # Add header separator
+                    separator = "| " + " | ".join("---" for _ in row) + " |"
+                    lines.append(separator)
+            return "\n".join(lines)
+        else:
+            return str(table_data)
+    
+    elif isinstance(table_data, dict):
+        # Convert dict to table format
+        if "header" in table_data and "rows" in table_data:
+            header = table_data["header"]
+            rows = table_data["rows"]
+            all_rows = [header] + rows
+            return format_table_for_prompt(all_rows)
+        elif "table_columns" in table_data and "table_content" in table_data:
+            header = table_data["table_columns"]
+            rows = table_data["table_content"]
+            all_rows = [header] + rows
+            return format_table_for_prompt(all_rows)
+        else:
+            return str(table_data)
+    
+    else:
+        return str(table_data)
+
+
+def create_tqa_prompt(question: str, 
+                     table: str, 
+                     context: str = "", 
+                     task_type: str = "general") -> str:
+    """
+    Create TQA prompt based on task type.
+    
+    Args:
+        question: The question to answer
+        table: Formatted table data
+        context: Additional context
+        task_type: Type of task (tat, mmqa, wtq, etc.)
+        
+    Returns:
+        Formatted prompt string
+    """
+    if task_type.lower() == "tat":
+        prompt_template = """Given the following table and context, please answer the question accurately.
+
+Context: {context}
+
+Table:
+{table}
+
+Question: {question}
+
+Please provide a clear and concise answer based on the information in the table and context."""
+
+    elif task_type.lower() == "mmqa":
+        prompt_template = """You are given a table and a question. Please analyze the table carefully and answer the question based on the information provided.
+
+Table:
+{table}
+
+Question: {question}
+
+Answer:"""
+
+    elif task_type.lower() in ["wtq", "scitab"]:
+        prompt_template = """Given the table below, please answer the question.
+
+Table:
+{table}
+
+Question: {question}
+
+Please provide the answer based on the table data:"""
+
+    else:
+        # General template
+        prompt_template = """Based on the following table, please answer the question.
+
+{context_section}
+Table:
+{table}
+
+Question: {question}
+
+Answer:"""
+
+    # Handle context section
+    context_section = f"Context: {context}\n\n" if context.strip() else ""
+    
+    return prompt_template.format(
+        question=question,
+        table=table,
+        context=context,
+        context_section=context_section
+    )
+
+
+def normalize_answer(text: str) -> str:
+    """Normalize answer for evaluation."""
+    def remove_articles(text):
+        return re.sub(r"\b(a|an|the)\b", " ", text)
+
+    def white_space_fix(text):
+        return " ".join(text.split())
+
+    def remove_punc(text):
+        exclude = set(string.punctuation)
+        return "".join(ch for ch in text if ch not in exclude)
+
+    def lower(text):
+        return text.lower()
+
+    return white_space_fix(remove_articles(remove_punc(lower(text))))
+
+
+def exact_match(predicted: str, target: str) -> bool:
+    """Calculate exact match score."""
+    return normalize_answer(predicted) == normalize_answer(target)
+
+
+def calculate_metrics(results: List[Dict[str, Any]]) -> Dict[str, float]:
+    """
+    Calculate evaluation metrics.
+    
+    Args:
+        results: List of result dictionaries with 'predicted' and 'target' keys
+        
+    Returns:
+        Dictionary containing calculated metrics
+    """
+    if not results:
+        return {"exact_match": 0.0, "total": 0, "correct": 0}
+    
+    correct = 0
+    total = len(results)
+    
+    for result in results:
+        if "predicted" in result and "target" in result:
+            if exact_match(str(result["predicted"]), str(result["target"])):
+                correct += 1
+    
+    exact_match_score = correct / total if total > 0 else 0.0
+    
+    return {
+        "exact_match": exact_match_score,
+        "correct": correct,
+        "total": total
+    }
+
+
+def print_sample_results(results: List[Dict[str, Any]], num_samples: int = 3):
+    """Print sample results for inspection."""
+    print(f"\n=== Sample Results (showing {min(num_samples, len(results))} out of {len(results)}) ===")
+    
+    for i, result in enumerate(results[:num_samples]):
+        print(f"\nSample {i+1}:")
+        print(f"Question: {result.get('question', 'N/A')}")
+        print(f"Target: {result.get('target', 'N/A')}")
+        print(f"Predicted: {result.get('predicted', 'N/A')}")
+        print(f"Correct: {exact_match(str(result.get('predicted', '')), str(result.get('target', '')))}")
+        print("-" * 50)

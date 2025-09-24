@@ -19,7 +19,7 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 import os
 from typing import Dict, Optional
 from dotenv import load_dotenv
-from openai import OpenAI
+from openai import OpenAI, AsyncOpenAI
 
 
 class LLMConfig:
@@ -57,6 +57,22 @@ class LLMConfig:
         # Default to OpenAI for unknown models
         else:
             return self._get_openai_client()
+
+    def get_async_client_for_model(self, model_name: str) -> AsyncOpenAI:
+        """Get appropriate AsyncOpenAI client based on model name."""
+        model_name_lower = model_name.lower()
+        
+        # Route GPT models to OpenAI
+        if any(gpt_model in model_name_lower for gpt_model in self.gpt_models):
+            return self._get_async_openai_client()
+        
+        # Route open-source models to RunPod vLLM
+        elif any(os_model in model_name_lower for os_model in self.open_source_models):
+            return self._get_async_runpod_client()
+        
+        # Default to OpenAI for unknown models
+        else:
+            return self._get_async_openai_client()
     
     def _get_openai_client(self) -> OpenAI:
         """Get OpenAI client for GPT models."""
@@ -84,6 +100,31 @@ class LLMConfig:
         return OpenAI(
             api_key=self.runpod_api_key,
             base_url=self.runpod_base_url,
+        )
+
+    def _get_async_openai_client(self) -> AsyncOpenAI:
+        """Create AsyncOpenAI client for GPT models."""
+        if not self.openai_api_key:
+            raise ValueError("OPENAI_API_KEY not found in environment variables")
+        
+        client_kwargs = {
+            "api_key": self.openai_api_key,
+            "base_url": self.openai_base_url
+        }
+        
+        if self.openai_org_id:
+            client_kwargs["organization"] = self.openai_org_id
+        
+        return AsyncOpenAI(**client_kwargs)
+
+    def _get_async_runpod_client(self) -> AsyncOpenAI:
+        """Create OpenAI-compatible async client for RunPod vLLM."""
+        if not self.runpod_api_key or not self.runpod_base_url:
+            raise ValueError("RUNPOD_API_KEY and RUNPOD_BASE_URL must be set for open-source models")
+        
+        return AsyncOpenAI(
+            api_key=self.runpod_api_key,
+            base_url=self.runpod_base_url
         )
     
     def is_gpt_model(self, model_name: str) -> bool:

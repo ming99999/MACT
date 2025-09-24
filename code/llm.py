@@ -27,6 +27,8 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import random
 import math
+import asyncio
+import re
 from typing import Union, List, Optional
 from openai import OpenAI
 from config import llm_config
@@ -40,6 +42,7 @@ class UnifiedLLM:
     def __init__(self, model_name: str):
         self.model_name = model_name
         self.client = llm_config.get_client_for_model(model_name)
+        self.async_client = llm_config.get_async_client_for_model(model_name)
         self.is_gpt = llm_config.is_gpt_model(model_name)
         
     def __call__(self, prompt: Union[str, List[dict]], num_return_sequences: int = 1, 
@@ -68,21 +71,68 @@ class UnifiedLLM:
             )
             
             # Extract generated text from all choices
-            results = [choice.message.content for choice in response.choices]
+            results = [choice.message.content.strip() if choice.message.content else "" for choice in response.choices]
             
             # For consistency with original interface, return probability scores if requested
             # Note: This is a simplified implementation as true logprobs may not be available
             # from all endpoints
-            if return_prob:
-                # Generate mock probability scores for compatibility
-                scores = [1.0 / (i + 1) for i in range(len(results))]
-                results.append(scores)
+            # if return_prob:
+            #     # Generate mock probability scores for compatibility
+            #     scores = [1.0 / (i + 1) for i in range(len(results))]
+            #     results.append(scores)
             
             return results
             
         except Exception as e:
             print(f"Error calling LLM {self.model_name}: {e}")
             return [""]
+
+    async def _get_completion_async(self, 
+                                    prompt: str, 
+                                    max_tokens: int, 
+                                    temperature: float, 
+                                    num_return_sequences: int, 
+                                    stop_sequences: Optional[List[str]]) -> List[str]:
+        """Helper for async completion calls."""
+        try:
+            messages = [{"role": "user", "content": prompt}]
+            call_params = {
+                "model": self.model_name,
+                "messages": messages,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "n": num_return_sequences
+            }
+            if stop_sequences:
+                call_params["stop"] = stop_sequences
+            
+            response = await self.async_client.chat.completions.create(**call_params)
+            
+            results = []
+            for choice in response.choices:
+                content = choice.message.content.strip() if choice.message.content else ""
+                results.append(content)
+            return results
+        except Exception as e:
+            print(f"Error in async LLM call for prompt '{prompt[:50]}...': {e}")
+            return [""] * num_return_sequences
+
+    async def generate_batch(self, 
+                             prompts: List[str], 
+                             max_tokens: int = 1000,
+                             temperature: float = 0.7,
+                             num_return_sequences: int = 1,
+                             stop_sequences: Optional[List[str]] = None) -> List[List[str]]:
+        """
+        Generate text completions for a batch of prompts asynchronously.
+        """
+        tasks = [
+            self._get_completion_async(
+                prompt, max_tokens, temperature, num_return_sequences, stop_sequences
+            ) for prompt in prompts
+        ]
+        results = await asyncio.gather(*tasks)
+        return results
     
     def encode(self, prompt: str) -> int:
         """Estimate token count for a prompt.
@@ -122,8 +172,67 @@ def get_completion(prompt: str, client: Optional[OpenAI] = None, n: int = 1,
             n=n,
             stop=None
         )
-        return [item.message.content for item in response.choices]
+        return [item.message.content.strip() if item.message.content else "" for item in response.choices]
 
 
 # For backward compatibility, create an alias
 OpenSourceLLM = UnifiedLLM
+
+
+def extract_answer_from_response(response: str, method: str = "last_line") -> str:
+    """
+    Extract answer from LLM response using various methods.
+    
+    Args:
+        response: LLM response text
+        method: Extraction method ("last_line", "boxed", "answer_prefix", "smart")
+        
+    Returns:
+        Extracted answer string
+    """
+    if not response or not response.strip():
+        return ""
+    
+    response = response.strip()
+    
+    if method == "smart":
+        # Try multiple extraction methods in order
+        for extraction_method in ["answer_prefix", "boxed", "last_line"]:
+            result = extract_answer_from_response(response, extraction_method)
+            if result and result != response:  # Found a shorter, extracted answer
+                return result
+        return response  # Fallback to full response
+    
+    elif method == "last_line":
+        # Get the last non-empty line
+        lines = [line.strip() for line in response.split('\n') if line.strip()]
+        return lines[-1] if lines else ""
+    
+    elif method == "boxed":
+        # Look for \\boxed{answer} pattern
+        boxed_pattern = r'\\boxed\{([^}]+)\}'
+        matches = re.findall(boxed_pattern, response)
+        return matches[-1] if matches else ""
+    
+    elif method == "answer_prefix":
+        # Look for common answer patterns
+        patterns = [
+            r'(?:Answer|Final Answer|The answer is):\s*(.+)',
+            r'(?:Answer|Final Answer|The answer is)\s+(.+)',
+            r'.*?\$([0-9.,]+\s*million)',  # Dollar amounts first
+            r'.*?(?:was|is|were|are)\s+([^.]+?)\.',
+            r'.*?utilizing\s+(.+?)\.',
+        ]
+        
+        for pattern in patterns:
+            match = re.search(pattern, response, re.IGNORECASE)
+            if match:
+                extracted = match.group(1).strip()
+                # Clean up common prefixes/suffixes
+                extracted = re.sub(r'^(the|a|an)\s+', '', extracted, flags=re.IGNORECASE)
+                return extracted
+        
+        return ""
+    
+    else:
+        return response
