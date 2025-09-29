@@ -271,6 +271,93 @@ def load_mmqa_dataset(file_path: str) -> List[Dict[str, Any]]:
         return []
 
 
+def convert_tat_to_mmqa_format(tat_item: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Convert TAT dataset item to MMQA-compatible format.
+
+    Args:
+        tat_item: TAT dataset item
+
+    Returns:
+        MMQA-compatible item
+    """
+    # Convert table_text to MMQA table format
+    table_data = tat_item.get("table_text", [])
+    if not table_data:
+        return None
+
+    # First row is usually header
+    header = table_data[0] if table_data else []
+    content = table_data[1:] if len(table_data) > 1 else []
+
+    # Convert answer format
+    answer = tat_item.get("answer", [])
+    if isinstance(answer, list) and answer:
+        answer_str = ", ".join(str(a) for a in answer)
+    else:
+        answer_str = str(answer) if answer else ""
+
+    return {
+        "id_": f"tat_{hash(tat_item.get('statement', '')) % 10000}",
+        "Question": tat_item.get("statement", ""),
+        "tables": [{
+            "table_columns": header,
+            "table_content": content
+        }],
+        "table_names": ["table_0"],
+        "answer": answer_str,
+        "foreign_keys": [],
+        "primary_keys": [],
+        "SQL": "",  # TAT doesn't have SQL
+        "additional_context": tat_item.get("text", "")
+    }
+
+
+def load_dataset_universal(file_path: str) -> List[Dict[str, Any]]:
+    """
+    Universal dataset loader supporting both MMQA and TAT formats.
+
+    Args:
+        file_path: Path to dataset file
+
+    Returns:
+        List of dataset items in MMQA-compatible format
+    """
+    import json
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            if file_path.endswith('.jsonl'):
+                # JSONL format
+                dataset = [json.loads(line) for line in f if line.strip()]
+            else:
+                # JSON format
+                dataset = json.load(f)
+
+        # Detect format and convert if necessary
+        valid_items = []
+        for item in dataset:
+            # Check if it's TAT format (has 'statement' and 'table_text')
+            if 'statement' in item and 'table_text' in item:
+                # Convert TAT to MMQA format
+                converted_item = convert_tat_to_mmqa_format(item)
+                if converted_item and validate_mmqa_item(converted_item):
+                    valid_items.append(converted_item)
+                else:
+                    print(f"Skipping invalid TAT item: {item.get('statement', 'unknown')[:50]}...")
+            # Check if it's MMQA format
+            elif validate_mmqa_item(item):
+                valid_items.append(item)
+            else:
+                print(f"Skipping unrecognized format item: {item.get('id_', item.get('Question', 'unknown'))}")
+
+        return valid_items
+
+    except Exception as e:
+        print(f"Error loading dataset from {file_path}: {e}")
+        return []
+
+
 def calculate_mmqa_metrics(results: List[Dict[str, Any]]) -> Dict[str, float]:
     """
     Calculate evaluation metrics for MMQA results.

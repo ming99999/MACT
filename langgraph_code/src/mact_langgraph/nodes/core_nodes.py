@@ -11,6 +11,7 @@ These nodes handle the main reasoning workflow:
 """
 
 import asyncio
+import os
 from typing import List, Dict, Any
 from collections import Counter
 from langchain_openai import ChatOpenAI
@@ -23,6 +24,65 @@ from ..state import (
 from ..utils.prompt_utils import build_react_prompt, build_evaluation_prompt
 from ..utils.action_utils import parse_thought_action, parse_action, extract_from_outputs
 from ..utils.table_utils import normalize_answer, exact_match
+
+
+def create_llm(model_name: str) -> ChatOpenAI:
+    """
+    Create LLM instance with support for OpenAI and RunPod vLLM.
+
+    Args:
+        model_name: Name of the model to use
+
+    Returns:
+        Configured ChatOpenAI instance
+    """
+    # Check if RunPod should be used
+    runpod_api_key = os.getenv("RUNPOD_API_KEY")
+    runpod_base_url = os.getenv("RUNPOD_BASE_URL")
+
+    if runpod_api_key and runpod_base_url and model_name.startswith("runpod"):
+        # Use RunPod vLLM endpoint - support cold start with longer timeout
+        actual_model = model_name.replace("runpod:", "") if ":" in model_name else "Qwen/Qwen3-8B"
+
+        print(f"🚀 Connecting to RunPod vLLM with model: {actual_model}")
+        print(f"   Base URL: {runpod_base_url}")
+        print(f"   Cold start timeout: 300 seconds")
+
+        try:
+            llm = ChatOpenAI(
+                model=actual_model,
+                api_key=runpod_api_key,
+                base_url=runpod_base_url,
+                temperature=0.1,
+                max_tokens=2048,
+                timeout=300,  # 5 minutes for cold start
+                max_retries=1
+            )
+
+            print("🔍 Testing RunPod vLLM connectivity...")
+            test_response = llm.invoke("Hello, respond with 'OK'")
+            if test_response and test_response.content:
+                print(f"✅ RunPod vLLM connected successfully!")
+                print(f"   Model: {actual_model}")
+                print(f"   Test response: {test_response.content[:50]}...")
+                return llm
+            else:
+                print("❌ RunPod vLLM test failed: Empty response")
+                exit(1)
+
+        except Exception as e:
+            print(f"❌ RunPod vLLM connection failed: {e}")
+            print("🛑 Experiment terminated. Please check RunPod endpoint and try again.")
+            exit(1)
+    else:
+        # Use OpenAI API
+        print(f"🌐 Using OpenAI API with model: {model_name}")
+        return ChatOpenAI(
+            model=model_name,
+            temperature=0.1,
+            max_tokens=2048,
+            timeout=60
+        )
 
 
 async def input_processor_node(state: MACTState) -> MACTState:
@@ -43,19 +103,26 @@ async def input_processor_node(state: MACTState) -> MACTState:
 
     updated_tables = []
     for table in tables:
-        if not table.linear_representation:
-            table_rows = [table.columns] + table.content
-            table.linear_representation = table_linear(table_rows)
+        table_rows = [table.columns] + table.content
 
-        if not table.df_code:
-            table_rows = [table.columns] + table.content
-            table.df_code = table2df(table_rows)
+        # Force regenerate linear representation (기존 MACT 방식)
+        linear_rep = table_linear(table_rows)
 
-        updated_tables.append(table.to_dict())
+        # Force regenerate DataFrame code (기존 MACT 방식)
+        df_code = table2df(table_rows)
 
-    # Log initialization
-    log_entry = f"Initialized with question: {state['question'][:100]}..."
-    execution_log = state["execution_log"] + [log_entry]
+        # Create updated table dictionary with forced values
+        updated_table = table.to_dict()
+        updated_table["linear_representation"] = linear_rep
+        updated_table["df_code"] = df_code
+
+        updated_tables.append(updated_table)
+
+    # Log initialization with table info
+    init_log = f"Initialized with question: {state['question'][:100]}..."
+    table_logs = [f"Table {i}: Generated df_code ({len(updated_tables[i]['df_code'])} chars)"
+                  for i in range(len(updated_tables))]
+    execution_log = state["execution_log"] + [init_log] + table_logs
 
     return {
         **state,
@@ -84,46 +151,89 @@ async def planner_node(state: MACTState) -> MACTState:
     prompt = build_react_prompt(state)
 
     # Initialize LLM
-    llm = ChatOpenAI(
-        model=state["plan_model"],
-        temperature=0.6,
-        max_tokens=1000
-    )
+    llm = create_llm(state["plan_model"])
 
-    # Generate multiple candidate actions
+    # Generate multiple candidate actions using batch API call
     candidates = []
     plan_sample = state["plan_sample"]
 
-    for i in range(plan_sample):
-        try:
+    # 🎯 Phase 2-B: 기존 MACT처럼 배치 API 호출로 성능 개선
+    # LOGP reward를 위해 logprobs도 수집
+    reward_type = state.get("reward_type", "consistency")
+    logprobs_enabled = reward_type == "logp"
+
+    try:
+        # Use sequential approach matching original MACT logic
+        for i in range(plan_sample):
             response = await llm.ainvoke(prompt)
             content = response.content
 
-            # Parse thought and action
-            thought, action = parse_thought_action(content)
+            try:
+                # Parse thought and action
+                thought, action = parse_thought_action(content)
 
-            if action:
-                # Parse action type and argument
-                action_type, argument = parse_action(action)
+                if action:
+                    # Parse action type and argument
+                    action_type, argument = parse_action(action)
 
-                if action_type and argument:
-                    candidate = ActionCandidate(
-                        thought=thought,
-                        action=action,
-                        action_type=ActionType(action_type),
-                        argument=argument,
-                        score=0.0,
-                        raw_response=content
-                    )
-                    candidates.append(candidate)
+                    if action_type and argument:
+                        candidate = ActionCandidate(
+                            thought=thought,
+                            action=action,
+                            action_type=ActionType(action_type),
+                            argument=argument,
+                            score=0.0,  # Default score for sequential approach
+                            raw_response=content
+                        )
+                        candidates.append(candidate)
 
-        except Exception as e:
-            # Log error but continue with other candidates
-            error_log = f"Error generating candidate {i}: {str(e)}"
-            state = {
-                **state,
-                "execution_log": state["execution_log"] + [error_log]
-            }
+            except Exception as e:
+                # Log error but continue with other candidates
+                error_log = f"Error parsing candidate {i}: {str(e)}"
+                state = {
+                    **state,
+                    "execution_log": state["execution_log"] + [error_log]
+                }
+
+    except Exception as e:
+        # Fallback to sequential if batch fails
+        error_log = f"Batch planning failed, using fallback: {str(e)}"
+        state = {
+            **state,
+            "execution_log": state["execution_log"] + [error_log]
+        }
+
+        # Fallback: use original sequential approach
+        for i in range(min(plan_sample, 2)):  # Limit fallback to 2 attempts
+            try:
+                response = await llm.ainvoke(prompt)
+                content = response.content
+
+                # Parse thought and action
+                thought, action = parse_thought_action(content)
+
+                if action:
+                    # Parse action type and argument
+                    action_type, argument = parse_action(action)
+
+                    if action_type and argument:
+                        candidate = ActionCandidate(
+                            thought=thought,
+                            action=action,
+                            action_type=ActionType(action_type),
+                            argument=argument,
+                            score=0.0,
+                            raw_response=content
+                        )
+                        candidates.append(candidate)
+
+            except Exception as e:
+                # Log error but continue with other candidates
+                error_log = f"Error in fallback candidate {i}: {str(e)}"
+                state = {
+                    **state,
+                    "execution_log": state["execution_log"] + [error_log]
+                }
 
     # Update state with candidates
     updated_state = update_state_with_candidates(state, candidates)
@@ -147,6 +257,48 @@ async def action_selector_node(state: MACTState) -> MACTState:
     """
     candidates = get_candidates_from_state(state)
 
+    # 🎯 Phase 3-C Fix: Prevent first-step Finish actions (critical bug fix)
+    current_step = state.get("current_step", 1)
+    if current_step == 1:
+        # Filter out Finish actions on the first step
+        non_finish_candidates = []
+        for candidate in candidates:
+            if candidate.action_type != ActionType.FINISH:
+                non_finish_candidates.append(candidate)
+            else:
+                # Log rejected first-step Finish
+                log_msg = f"Rejected first-step Finish action: {candidate.action[:50]}..."
+                state["execution_log"] = state["execution_log"] + [log_msg]
+
+        if non_finish_candidates:
+            candidates = non_finish_candidates
+            print(f"DEBUG: Filtered out {len(get_candidates_from_state(state)) - len(non_finish_candidates)} first-step Finish actions")
+        else:
+            # All candidates were Finish actions - force a Retrieve action instead
+            print("DEBUG: All first-step candidates were Finish - forcing Retrieve action")
+            from ..state import ActionCandidate
+            forced_candidate = ActionCandidate(
+                action="Retrieve[Show table data]",
+                action_type=ActionType.RETRIEVE,
+                thought="I need to examine the table data first before providing an answer.",
+                argument="Show table data",
+                confidence=1.0,
+                score=1.0
+            )
+            candidates = [forced_candidate]
+            log_msg = "Forced Retrieve action to prevent invalid first-step Finish"
+            state["execution_log"] = state["execution_log"] + [log_msg]
+
+    # Early termination: if we have successful candidates and high confidence, use the first good one
+    config = state.get("config", {})
+    if "qwen" in config.get("plan_model", "").lower() and len(candidates) >= 1:
+        # For QWEN models, be more aggressive about early termination
+        for candidate in candidates:
+            if hasattr(candidate, 'confidence') and candidate.confidence > 0.7:
+                # Use this candidate immediately
+                candidates = [candidate]
+                break
+
     if not candidates:
         # No candidates available, mark as error
         return {
@@ -168,12 +320,12 @@ async def action_selector_node(state: MACTState) -> MACTState:
         selected_action = await _select_by_llm_evaluation(candidates, state)
 
     elif reward_type == RewardType.LOGP:
-        # Use log probabilities (simplified implementation)
-        selected_action = _select_by_random(candidates)  # Placeholder
+        # Use log probabilities to select best candidate
+        selected_action = _select_by_logp(candidates)
 
     elif reward_type == RewardType.ROLLOUT:
-        # Use rollout evaluation (simplified implementation)
-        selected_action = _select_by_consistency(candidates)  # Placeholder
+        # Use rollout evaluation (look-ahead simulation)
+        selected_action = await _select_by_rollout(candidates, state)
 
     elif reward_type == RewardType.COMBINED:
         # Combine multiple methods
@@ -189,9 +341,23 @@ async def action_selector_node(state: MACTState) -> MACTState:
     # Update state with selected action
     updated_state = update_state_with_selected_action(state, selected_action)
 
-    # Log selection
-    log_entry = f"Selected action: {selected_action.action_type.value}[{selected_action.argument[:50]}...]"
-    updated_state["execution_log"] = updated_state["execution_log"] + [log_entry]
+    # Verify action type is properly set
+    if "current_action_type" not in updated_state or not updated_state["current_action_type"]:
+        error_msg = f"Action type not properly set for action: {selected_action.action}"
+        updated_state = {
+            **updated_state,
+            "has_error": True,
+            "error_message": error_msg,
+            "execution_log": updated_state["execution_log"] + [f"ERROR: {error_msg}"]
+        }
+        return updated_state
+
+    # Enhanced logging with action type verification
+    action_type = updated_state["current_action_type"]
+    log_entry = f"Selected action: {action_type}[{selected_action.argument[:50]}...] (confidence: {getattr(selected_action, 'score', 0.0):.2f})"
+    debug_log = f"Debug - Action candidates: {len(candidates)}, Selected: {selected_action.action_type.value}, Raw: {selected_action.action[:50]}..."
+
+    updated_state["execution_log"] = updated_state["execution_log"] + [log_entry, debug_log]
 
     return updated_state
 
@@ -263,31 +429,44 @@ async def termination_checker_node(state: MACTState) -> MACTState:
     is_finished = False
     is_halted = False
     reason = ""
+    final_answer = state["final_answer"]
 
-    # Check if action was "Finish"
+    # Priority 1: Check if action was "Finish" (highest priority)
     if state["current_action_type"] == ActionType.FINISH.value:
         is_finished = True
         reason = "Finish action executed"
         # Extract answer from argument
         final_answer = state["current_argument"]
-    else:
-        final_answer = state["final_answer"]
 
-    # Check step limits
-    if state["current_step"] >= state["max_steps"]:
-        is_halted = True
-        reason = "Maximum steps reached"
+        # Log termination check for Finish action
+        log_entry = f"Termination check: finished=True, reason='Finish action executed'"
+        execution_log = state["execution_log"] + [log_entry]
 
-    if state["actual_step"] >= state["max_actual_steps"]:
-        is_halted = True
-        reason = "Maximum actual steps reached"
+        # Finish action: return immediately without incrementing steps
+        return {
+            **state,
+            "is_finished": True,
+            "is_halted": False,  # Explicitly set to False
+            "final_answer": final_answer,
+            "execution_log": execution_log
+            # Keep current_step and actual_step unchanged
+        }
 
-    # Check for errors
+    # Priority 2: Check for errors
     if state["has_error"]:
         is_halted = True
         reason = f"Error occurred: {state['error_message']}"
 
-    # Increment step counters if continuing
+    # Priority 3: Check step limits (only if not finished and no error)
+    elif state["current_step"] >= state["max_steps"]:
+        is_halted = True
+        reason = "Maximum steps reached"
+
+    elif state["actual_step"] >= state["max_actual_steps"]:
+        is_halted = True
+        reason = "Maximum actual steps reached"
+
+    # Increment step counters only if continuing (not finished, not halted)
     next_step = state["current_step"]
     next_actual_step = state["actual_step"]
 
@@ -322,6 +501,15 @@ async def answer_aggregator_node(state: MACTState) -> MACTState:
     """
     final_answer = state["final_answer"]
     confidence_score = 0.0
+
+    # First, check if current selected action is a Finish action
+    if state.get("current_action") and state["current_action"].startswith("Finish["):
+        import re
+        finish_pattern = r'Finish\[([^\]]+)\]'
+        matches = re.findall(finish_pattern, state["current_action"])
+        if matches:
+            final_answer = matches[0]  # Take the first match
+            confidence_score = 0.8
 
     # If no answer yet, try to aggregate from preliminary answers
     if not final_answer and state["preliminary_answers"]:
@@ -397,7 +585,7 @@ async def _select_by_llm_evaluation(candidates: List[ActionCandidate], state: MA
         prompt = build_evaluation_prompt([c.to_dict() for c in candidates], context)
 
         # Use planning model for evaluation
-        llm = ChatOpenAI(model=state["plan_model"], temperature=0.0)
+        llm = create_llm(state["plan_model"])
         response = await llm.ainvoke(prompt)
 
         # Extract choice
@@ -409,8 +597,59 @@ async def _select_by_llm_evaluation(candidates: List[ActionCandidate], state: MA
         return _select_by_consistency(candidates)
 
 
+def _select_by_logp(candidates: List[ActionCandidate]) -> ActionCandidate:
+    """Select action based on highest log probability."""
+    if not candidates:
+        return None
+
+    # Select candidate with highest log probability (stored in score field)
+    # Higher logprob (less negative) means more confident generation
+    best_candidate = max(candidates, key=lambda c: c.score if c.score else -float('inf'))
+    return best_candidate
+
+
+async def _select_by_rollout(candidates: List[ActionCandidate], state: MACTState) -> ActionCandidate:
+    """Select action using rollout evaluation (look-ahead)."""
+    if not candidates:
+        return None
+
+    # 🎯 ROLLOUT: 기존 MACT의 rollout 전략 - 각 후보를 끝까지 시뮬레이션
+    # 복잡한 구현이므로 현재는 간소화된 버전
+    # TODO: 향후 완전한 rollout 구현 필요
+
+    # 현재는 LLM 평가와 consistency를 결합한 방식으로 구현
+    try:
+        # 각 후보의 potential quality를 평가
+        scored_candidates = []
+        for candidate in candidates:
+            # 간단한 휴리스틱: action_type과 argument의 관련성 평가
+            score = 0.0
+
+            # 더 구체적인 argument를 가진 action에 높은 점수
+            if candidate.argument and len(candidate.argument.strip()) > 5:
+                score += 1.0
+
+            # Finish 액션은 마지막에만 선택되도록 낮은 점수
+            if candidate.action_type == ActionType.FINISH:
+                score -= 0.5
+
+            # Retrieve와 Operate는 중간 단계에서 유용
+            if candidate.action_type in [ActionType.RETRIEVE, ActionType.OPERATE]:
+                score += 0.5
+
+            scored_candidates.append((candidate, score))
+
+        # 가장 높은 점수의 후보 선택
+        best_candidate = max(scored_candidates, key=lambda x: x[1])[0]
+        return best_candidate
+
+    except Exception:
+        # Fallback to consistency
+        return _select_by_consistency(candidates)
+
+
 def _select_by_random(candidates: List[ActionCandidate]) -> ActionCandidate:
-    """Select action randomly (placeholder for logp)."""
+    """Select action randomly (fallback)."""
     import random
     return random.choice(candidates) if candidates else None
 

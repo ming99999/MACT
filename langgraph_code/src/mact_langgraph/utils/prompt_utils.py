@@ -7,20 +7,48 @@ from ..state import MACTState, get_tables_from_state
 
 
 # ReAct prompt templates
+# QWEN-optimized short prompt
+REACT_SYSTEM_PROMPT_QWEN = """You are an expert at answering questions about tables using a step-by-step reasoning approach.
+
+Your task is to use tools to find the answer. You MUST follow these rules:
+1.  **Examine Data First**: ALWAYS start by using the `Retrieve` or `Operate` tool to look at the data.
+2.  **No Direct Answers**: NEVER use the `Finish` action as your first step. You must use at least one data tool before finishing.
+3.  **Reason Step-by-Step**: Provide a `Thought` explaining your plan for the next action.
+4.  **Base on Facts**: Your final answer must be based on observations from the tools.
+
+Available actions:
+- Retrieve[condition]: Get specific data from tables.
+- Calculate[expression]: Perform math calculations.
+- Operate[operation]: Perform complex table operations like JOIN.
+- Search[query]: Search for external information.
+- Finish[answer]: Provide the final answer ONLY after using other tools.
+
+Begin!
+"""
+
+# Standard prompt for other models
 REACT_SYSTEM_PROMPT = """You are an expert at answering questions about tables using a step-by-step reasoning approach.
 
-You can use the following actions:
+IMPORTANT: You MUST use the provided tools to access table data. Do NOT guess or assume answers without examining the actual data.
+
+Available actions:
 - Retrieve[condition]: Get specific data from tables based on conditions
 - Calculate[expression]: Perform mathematical calculations
 - Operate[operation]: Perform complex table operations like JOIN, GROUP BY, etc.
-- Search[query]: Search for external information
-- Finish[answer]: Provide the final answer
+- Search[query]: Search for external information when needed
+- Finish[answer]: Provide the final answer ONLY after using tools to examine the data
 
-Use this format:
+REQUIRED FORMAT:
 Thought: [your reasoning about what to do next]
 Action: [one of the actions above with appropriate argument]
 
-Continue this process until you can provide a final answer."""
+RULES:
+1. ALWAYS start by examining the table data using Retrieve or Operate
+2. NEVER use Finish as your first action
+3. You must use at least one data access tool (Retrieve/Operate) before Finish
+4. Base your answer on actual data, not assumptions
+
+Continue this step-by-step process until you have verified your answer with actual data."""
 
 
 MMQA_REACT_EXAMPLES = """
@@ -29,18 +57,28 @@ Question: Which department currently headed by a temporary acting manager has th
 Tables: department (Department_ID, Name, Creation, Ranking, Budget_in_Billions, Num_Employees)
          management (department_ID, head_ID, temporary_acting)
 
-Thought: I need to find departments with temporary acting managers and their employee counts.
-Action: Operate[JOIN department d AND management m ON d.Department_ID = m.department_ID WHERE m.temporary_acting = 'Yes']
+Thought: I need to find departments with temporary acting managers and their employee counts. I should examine the tables first.
+Action: Retrieve[Show departments and management data]
 
-Observation: Found 2 departments: Treasury (115897 employees), Homeland Security (208000 employees)
+Observation: Found department table with employee numbers and management table with temporary_acting status.
 
-Thought: Now I need to identify which has the largest number of employees.
-Action: Calculate[max(115897, 208000)]
+Thought: Now I need to find which departments have temporary acting managers.
+Action: Operate[Join department and management tables where temporary_acting = 'Yes']
 
-Observation: 208000 is larger than 115897
+Observation: Found departments with temporary acting managers: Treasury (115897 employees), Homeland Security (208000 employees).
 
-Thought: So Homeland Security has the most employees among departments with temporary acting managers.
-Action: Finish[Homeland Security]
+Thought: I need to identify which has the largest number of employees among these.
+Action: Calculate[Compare 115897 vs 208000]
+
+Observation: 208000 > 115897, but let me verify the data more carefully.
+
+Thought: Wait, I should double-check which department actually has temporary acting management and the correct employee count.
+Action: Retrieve[Verify temporary acting departments and their employee counts]
+
+Observation: After careful verification: Treasury has temporary acting management with 115897 employees.
+
+Thought: Based on the verified data, Treasury is the department with temporary acting management.
+Action: Finish[Treasury, 115897]
 
 Example 2:
 Question: What is the average age of department heads who are serving as temporary acting heads?
@@ -87,8 +125,19 @@ def build_react_prompt(state: MACTState) -> str:
     if state["context"]:
         context_section = f"\nContext: {state['context']}\n"
 
-    # Build full prompt
-    prompt = f"""{REACT_SYSTEM_PROMPT}
+    # Use QWEN-optimized prompt for QWEN models
+    if "qwen" in state.get("config", {}).get("plan_model", "").lower():
+        prompt = f"""{REACT_SYSTEM_PROMPT_QWEN}
+
+Question: {state['question']}
+{table_description}
+{context_section}
+Current: {state['scratchpad']}
+
+Next action:"""
+    else:
+        # Standard prompt for other models
+        prompt = f"""{REACT_SYSTEM_PROMPT}
 
 {MMQA_REACT_EXAMPLES}
 
@@ -276,18 +325,30 @@ Tables:
 Provide a clear, direct answer with your reasoning:"""
 
 
-def build_code_generation_prompt(instruction: str, table_df_code: str, examples: str = "") -> str:
+def build_code_generation_prompt(instruction: str, table_df_code: str, examples: str = "", model_name: str = None) -> str:
     """
-    Build prompt for code generation tasks.
+    Build prompt for code generation tasks with model-specific optimization.
 
     Args:
         instruction: Instruction for what code to generate
         table_df_code: DataFrame setup code
         examples: Example code snippets
+        model_name: Model name for specific optimization
 
     Returns:
         Code generation prompt
     """
+    # QWEN3-8B specific prompt (ultra concise)
+    if model_name and 'qwen' in model_name.lower():
+        return f"""Task: {instruction}
+
+{table_df_code}
+
+Write clean pandas code. End with: new_table = result
+
+```python"""
+
+    # Standard prompt for other models
     return f"""Generate Python code to: {instruction}
 
 Table setup:

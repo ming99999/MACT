@@ -11,12 +11,13 @@ These nodes handle specific tool operations:
 import re
 import asyncio
 from typing import List, Dict, Any, Union
-from collections import defaultdict
+from collections import Counter
 from langchain_openai import ChatOpenAI
 from langchain_community.tools import WikipediaQueryRun
 from langchain_community.utilities import WikipediaAPIWrapper
 
-from ..state import MACTState, get_tables_from_state
+from ..state import MACTState, TableInfo, get_tables_from_state
+from .core_nodes import create_llm
 from ..utils.table_utils import (
     table_linear, table2df, execute_table_code, extract_code_from_response
 )
@@ -26,264 +27,322 @@ from ..utils.prompt_utils import build_code_generation_prompt
 async def retriever_tool_node(state: MACTState) -> MACTState:
     """
     Retrieve data from tables based on specified conditions.
-
-    Args:
-        state: Current MACT state
-
-    Returns:
-        Updated state with retrieval results
+    Phase 3-B: Fixed logic to properly interpret 'Show X' vs 'Filter X' instructions.
+    Now persists the resulting table back into the state.
     """
     instruction = state["current_argument"]
     tables = get_tables_from_state(state)
-
     results = []
     code_sample = state["code_sample"]
+    new_table_info = None
+
+    if not tables:
+        return {
+            **state,
+            "tool_results": state["tool_results"] + ["No tables available"],
+            "execution_log": state["execution_log"] + ["ERROR: No tables in state"]
+        }
+
+    # Use the latest table in the list for operations
+    table_df_code = tables[-1].df_code if tables else ""
+    debug_log = f"Retriever debug: Using table {len(tables)-1}, df_code length: {len(table_df_code)}"
+    print(f"DEBUG: {debug_log}")
+
+    if not table_df_code:
+        error_msg = "No DataFrame code available for table retrieval"
+        return {
+            **state,
+            "tool_results": state["tool_results"] + [f"ERROR: {error_msg}"],
+            "execution_log": state["execution_log"] + [f"ERROR: {error_msg}"]
+        }
 
     try:
-        # Use code model to generate table retrieval code
-        llm = ChatOpenAI(model=state["code_model"], temperature=0.6)
+        llm = create_llm(state["code_model"])
+        # 🎯 Phase 3-B Fix: Improved Retrieve prompt with better instructions
+        prompt = build_code_generation_prompt(
+            f"Retrieve and show data from table: {instruction}",
+            table_df_code,
+            model_name=state.get("code_model"),
+            examples=f"""
+# IMPORTANT: Always assign final result to 'new_table' variable
+# For "Show X data" or "Display X" - show the full relevant data
+# For "Get X where Y" - filter the data based on condition Y
 
-        # Get the first table's DataFrame code for context
-        table_df_code = tables[0].df_code if tables else ""
+# Examples:
+# "Show department data" -> new_table = df.copy()
+# "Show management data" -> new_table = df.copy()
+# "Get departments where budget > 10" -> new_table = df[df['Budget_in_Billions'] > 10]
+# "Filter by temporary acting" -> new_table = df[df['temporary_acting'] == 'Yes']
 
-        for attempt in range(code_sample):
-            try:
-                # Build prompt for code generation
-                prompt = build_code_generation_prompt(
-                    f"Filter and retrieve data from table: {instruction}",
-                    table_df_code,
-                    examples="""
-# Example: Get rows where column > value
-filtered_df = df[df['column_name'] > value]
-new_table = filtered_df
-
-# Example: Select specific columns
-result = df[['col1', 'col2']]
-new_table = result
+# Current instruction: {instruction}
+new_table = df  # Replace with appropriate logic
 """
+        )
+
+        responses = await llm.abatch([prompt] * code_sample)
+        codes = [response.content for response in responses if response.content]
+
+        # 🎯 Phase 2-A: 기존 MACT처럼 모든 코드를 실행하고 다수결로 선택
+        successful_results = []
+        successful_table_infos = []
+
+        for i, code in enumerate(codes):
+            try:
+                result, rows, error, _ = execute_table_code(
+                    code,
+                    table_df_code,
+                    model_name=state.get("code_model")
                 )
-
-                response = await llm.ainvoke(prompt)
-                code = response.content
-
-                # Execute the generated code
-                result, rows, error, _ = execute_table_code(code, table_df_code)
-
-                if result and rows:
-                    results.append(result)
+                if result and rows and not error:
+                    # 성공한 결과만 수집
+                    successful_results.append(result)
+                    successful_table_infos.append({
+                        'result': result,
+                        'rows': rows,
+                        'table_info': TableInfo(
+                            name=f"retrieved_step_{state['current_step']}_attempt_{i}",
+                            columns=rows[0],
+                            content=rows[1:],
+                            df_code=table2df(rows),
+                            linear_representation=table_linear(rows, num_row=None)
+                        )
+                    })
+                    results.append(result)  # 전체 결과에도 추가
+                else:
+                    # 실패한 경우도 로깅
+                    error_msg = f"Attempt {i+1} failed: {error or 'Empty result'}"
+                    state = {**state, "execution_log": state["execution_log"] + [error_msg]}
 
             except Exception as e:
-                # Log error but continue with other attempts
-                error_msg = f"Retrieval attempt {attempt + 1} failed: {str(e)}"
-                state = {
-                    **state,
-                    "execution_log": state["execution_log"] + [error_msg]
-                }
+                error_msg = f"Attempt {i+1} exception: {str(e)}"
+                state = {**state, "execution_log": state["execution_log"] + [error_msg]}
 
-        # Select best result (most frequent)
-        if results:
-            from collections import Counter
-            result_counts = Counter(results)
+        # 🎯 핵심: 성공한 결과들 중에서 다수결로 최적 선택
+        if successful_results:
+            # 가장 많이 나온 결과를 선택
+            result_counts = Counter(successful_results)
             best_result = result_counts.most_common(1)[0][0]
+            best_count = result_counts.most_common(1)[0][1]
+
+            # 선택된 결과에 해당하는 TableInfo 찾기
+            for item in successful_table_infos:
+                if item['result'] == best_result:
+                    new_table_info = item['table_info']
+                    break
+
+            # 다수결 정보 로깅
+            success_rate = len(successful_results) / len(codes) * 100
+            debug_msg = f"Majority voting: {best_result[:50]}... (appeared {best_count}/{len(successful_results)} times, success rate: {success_rate:.1f}%)"
+            state = {**state, "execution_log": state["execution_log"] + [debug_msg]}
+
+        elif results:
+            # 성공한 것이 없다면 기존 방식 폴백
+            best_result = Counter(results).most_common(1)[0][0]
         else:
-            best_result = f"Unable to retrieve data for: {instruction}"
+            best_result = f"Unable to retrieve data for: {instruction} (all {len(codes)} attempts failed)"
 
     except Exception as e:
         best_result = f"Error in retrieval: {str(e)}"
 
-    # Update state with result
-    tool_results = state["tool_results"] + [best_result]
-    log_entry = f"Retrieval completed: {best_result[:100]}..."
+    # Prepare state update
+    updated_state = {**state}
+    updated_state["tool_results"] = state["tool_results"] + [best_result]
+    updated_state["execution_log"] = state["execution_log"] + [f"Retrieval completed: {best_result[:100]}..."]
 
-    return {
-        **state,
-        "tool_results": tool_results,
-        "execution_log": state["execution_log"] + [log_entry]
-    }
+    # THE FIX: If a new table was created, add it to the state for the next step
+    if new_table_info:
+        updated_state["tables"] = state["tables"] + [new_table_info.to_dict()]
+
+    return updated_state
 
 
 async def calculator_tool_node(state: MACTState) -> MACTState:
     """
     Perform mathematical calculations.
-
-    Args:
-        state: Current MACT state
-
-    Returns:
-        Updated state with calculation results
     """
     expression = state["current_argument"]
-
     try:
-        # Clean the expression
         expression = expression.replace(",", "").replace("$", "")
-
-        # Try direct evaluation first
         try:
-            # Simple expression evaluation
             result = eval(expression, {"__builtins__": {}})
             result_str = str(result)
         except:
-            # If direct evaluation fails, try with mathematical operations
             import math
             safe_dict = {
                 "abs": abs, "round": round, "min": min, "max": max,
                 "sum": sum, "len": len, "int": int, "float": float,
                 "math": math, "sqrt": math.sqrt, "pow": pow
             }
-
             try:
                 result = eval(expression, {"__builtins__": {}}, safe_dict)
                 result_str = str(result)
             except:
-                # If still fails, try with code generation
                 result_str = await _calculate_with_code_generation(expression, state)
-
     except Exception as e:
         result_str = f"Calculation error: {str(e)}"
 
-    # Update state with result
-    tool_results = state["tool_results"] + [result_str]
-    calculation_results = state["calculation_results"] + [result_str]
-    log_entry = f"Calculation completed: {expression} = {result_str}"
-
     return {
         **state,
-        "tool_results": tool_results,
-        "calculation_results": calculation_results,
-        "execution_log": state["execution_log"] + [log_entry]
+        "tool_results": state["tool_results"] + [result_str],
+        "calculation_results": state["calculation_results"] + [result_str],
+        "execution_log": state["execution_log"] + [f"Calculation completed: {expression} = {result_str}"]
     }
 
 
 async def search_tool_node(state: MACTState) -> MACTState:
     """
     Search for external information using Wikipedia.
-
-    Args:
-        state: Current MACT state
-
-    Returns:
-        Updated state with search results
     """
     query = state["current_argument"]
-
     try:
-        # Use Wikipedia search
         wikipedia = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
         search_result = wikipedia.run(query)
-
-        # Truncate result if too long
         if len(search_result) > 500:
             search_result = search_result[:500] + "..."
-
     except Exception as e:
         search_result = f"Search failed: {str(e)}"
 
-    # Update state with result
-    tool_results = state["tool_results"] + [search_result]
-    search_results = state["search_results"] + [search_result]
-    log_entry = f"Search completed for: {query}"
-
     return {
         **state,
-        "tool_results": tool_results,
-        "search_results": search_results,
-        "execution_log": state["execution_log"] + [log_entry]
+        "tool_results": state["tool_results"] + [search_result],
+        "search_results": state["search_results"] + [search_result],
+        "execution_log": state["execution_log"] + [f"Search completed for: {query}"]
     }
 
 
 async def operator_tool_node(state: MACTState) -> MACTState:
     """
     Perform complex table operations like JOIN, GROUP BY, etc.
-
-    Args:
-        state: Current MACT state
-
-    Returns:
-        Updated state with operation results
+    Phase 3-B: Enhanced with robust column name handling and better JOIN logic.
+    Now persists the resulting table back into the state.
     """
     operation = state["current_argument"]
     tables = get_tables_from_state(state)
-
     results = []
     code_sample = state["code_sample"]
+    new_table_info = None
+
+    if not tables:
+        return {
+            **state,
+            "tool_results": state["tool_results"] + ["No tables available for operation"],
+            "execution_log": state["execution_log"] + ["ERROR: No tables in state for operation"]
+        }
+
+    table_codes = [len(table.df_code) for table in tables]
+    debug_log = f"Operator debug: Found {len(tables)} tables, df_code lengths: {table_codes}"
+    print(f"DEBUG: {debug_log}")
 
     try:
-        # Use code model to generate operation code
-        llm = ChatOpenAI(model=state["code_model"], temperature=0.6)
-
-        # Prepare DataFrame setup code for multiple tables
+        llm = create_llm(state["code_model"])
         df_setup_code = _build_multi_table_df_code(tables)
 
-        for attempt in range(code_sample):
-            try:
-                # Build prompt for complex operation
-                prompt = build_code_generation_prompt(
-                    f"Perform table operation: {operation}",
-                    df_setup_code,
-                    examples="""
-# Example: JOIN tables
-result = df1.merge(df2, on='common_column', how='inner')
-final_result = result
+        if not df_setup_code.strip():
+            raise ValueError("No DataFrame setup code available for operation")
 
-# Example: GROUP BY operation
-grouped = df.groupby('column').sum()
-final_result = grouped
+        # 🎯 Phase 3-B Fix: Improved Operate prompt with robust JOIN examples
+        prompt = build_code_generation_prompt(
+            f"Perform table operation: {operation}",
+            df_setup_code,
+            model_name=state.get("code_model"),
+            examples=f"""
+# IMPORTANT: Always assign final result to 'new_table' variable
+# Available tables: df1, df2, df3, etc. and primary df
 
-# Example: Filter and aggregate
-filtered = df[df['condition'] == value]
-final_result = filtered.groupby('group_col').agg({'num_col': 'sum'})
+# Common operations:
+# JOIN: new_table = df1.merge(df2, left_on='col1', right_on='col2', how='inner')
+# FILTER: new_table = df[df['column'] == 'value']
+# GROUP BY: new_table = df.groupby('column').agg({{'target_col': 'sum'}}).reset_index()
+# SELECT: new_table = df[['col1', 'col2', 'col3']]
+
+# For multi-table operations, use df1, df2, etc.
+# Current operation: {operation}
+new_table = df  # Replace with appropriate operation
 """
+        )
+
+        responses = await llm.abatch([prompt] * code_sample)
+        codes = [response.content for response in responses if response.content]
+
+        # 🎯 Phase 2-A: 기존 MACT처럼 모든 코드를 실행하고 다수결로 선택
+        successful_results = []
+        successful_table_infos = []
+
+        for i, code in enumerate(codes):
+            try:
+                result, rows, error, _ = execute_table_code(
+                    code,
+                    df_setup_code,
+                    model_name=state.get("code_model")
                 )
-
-                response = await llm.ainvoke(prompt)
-                code = response.content
-
-                # Execute the generated code
-                result, rows, error, _ = execute_table_code(code, df_setup_code)
-
-                if result and rows:
-                    results.append(result)
+                if result and rows and not error:
+                    # 성공한 결과만 수집
+                    successful_results.append(result)
+                    successful_table_infos.append({
+                        'result': result,
+                        'rows': rows,
+                        'table_info': TableInfo(
+                            name=f"operated_step_{state['current_step']}_attempt_{i}",
+                            columns=rows[0],
+                            content=rows[1:],
+                            df_code=table2df(rows),
+                            linear_representation=table_linear(rows, num_row=None)
+                        )
+                    })
+                    results.append(result)  # 전체 결과에도 추가
+                else:
+                    # 실패한 경우도 로깅
+                    error_msg = f"Operation attempt {i+1} failed: {error or 'Empty result'}"
+                    state = {**state, "execution_log": state["execution_log"] + [error_msg]}
 
             except Exception as e:
-                # Log error but continue with other attempts
-                error_msg = f"Operation attempt {attempt + 1} failed: {str(e)}"
-                state = {
-                    **state,
-                    "execution_log": state["execution_log"] + [error_msg]
-                }
+                error_msg = f"Operation attempt {i+1} exception: {str(e)}"
+                state = {**state, "execution_log": state["execution_log"] + [error_msg]}
 
-        # Select best result
-        if results:
-            from collections import Counter
-            result_counts = Counter(results)
+        # 🎯 핵심: 성공한 결과들 중에서 다수결로 최적 선택
+        if successful_results:
+            # 가장 많이 나온 결과를 선택
+            result_counts = Counter(successful_results)
             best_result = result_counts.most_common(1)[0][0]
+            best_count = result_counts.most_common(1)[0][1]
+
+            # 선택된 결과에 해당하는 TableInfo 찾기
+            for item in successful_table_infos:
+                if item['result'] == best_result:
+                    new_table_info = item['table_info']
+                    break
+
+            # 다수결 정보 로깅
+            success_rate = len(successful_results) / len(codes) * 100
+            debug_msg = f"Operation majority voting: {best_result[:50]}... (appeared {best_count}/{len(successful_results)} times, success rate: {success_rate:.1f}%)"
+            state = {**state, "execution_log": state["execution_log"] + [debug_msg]}
+
+        elif results:
+            # 성공한 것이 없다면 기존 방식 폴백
+            best_result = Counter(results).most_common(1)[0][0]
         else:
-            best_result = f"Unable to perform operation: {operation}"
+            best_result = f"Unable to perform operation: {operation} (all {len(codes)} attempts failed)"
 
     except Exception as e:
         best_result = f"Error in operation: {str(e)}"
 
-    # Update state with result
-    tool_results = state["tool_results"] + [best_result]
-    table_operations = state["table_operations"] + [best_result]
-    log_entry = f"Operation completed: {operation[:50]}..."
+    # Prepare state update
+    updated_state = {**state}
+    updated_state["tool_results"] = state["tool_results"] + [best_result]
+    updated_state["table_operations"] = state["table_operations"] + [best_result]
+    updated_state["execution_log"] = state["execution_log"] + [f"Operation completed: {operation[:50]}..."]
 
-    return {
-        **state,
-        "tool_results": tool_results,
-        "table_operations": table_operations,
-        "execution_log": state["execution_log"] + [log_entry]
-    }
+    # THE FIX: If a new table was created, add it to the state for the next step
+    if new_table_info:
+        updated_state["tables"] = state["tables"] + [new_table_info.to_dict()]
 
+    return updated_state
 
-# Helper functions
 
 async def _calculate_with_code_generation(expression: str, state: MACTState) -> str:
     """Generate code to perform calculation."""
     try:
-        llm = ChatOpenAI(model=state["code_model"], temperature=0.0)
-
+        llm = create_llm(state["code_model"])
         prompt = f"""Calculate the following expression and return only the result:
 {expression}
 
@@ -292,44 +351,36 @@ Provide Python code to calculate this:
 result = {expression}
 print(result)
 ```"""
-
         response = await llm.ainvoke(prompt)
-        code = extract_code_from_response(response.content)
-
+        code = extract_code_from_response(response.content, state.get("code_model"))
         if code:
-            # Execute the code safely
             local_vars = {}
             exec(code, {"__builtins__": {}}, local_vars)
-
             if "result" in local_vars:
                 return str(local_vars["result"])
-
         return f"Unable to calculate: {expression}"
-
     except Exception as e:
         return f"Calculation error: {str(e)}"
 
 
-def _build_multi_table_df_code(tables: List) -> str:
-    """Build DataFrame setup code for multiple tables."""
+def _build_multi_table_df_code(tables: List[TableInfo]) -> str:
+    """Build DataFrame setup code for multiple tables (기존 MACT 방식)."""
+    if not tables:
+        return ""
     setup_lines = ["import pandas as pd", "import numpy as np"]
-
     for i, table in enumerate(tables):
-        # Create individual DataFrame code
-        table_rows = [table.columns] + table.content
-        df_code = table2df(table_rows)
-
+        # Use the latest df_code for each table
+        df_code = table.df_code
         # Modify variable name for multi-table setup
         modified_code = df_code.replace("df=pd.DataFrame(data)", f"df{i+1}=pd.DataFrame(data)")
         setup_lines.append(modified_code)
-
-    # Add convenience variables
     if len(tables) >= 1:
         setup_lines.append("df = df1  # Primary table")
     if len(tables) >= 2:
         setup_lines.append("# Additional tables: df2, df3, etc.")
-
-    return "\n".join(setup_lines)
+    result = "\n".join(setup_lines)
+    print(f"DEBUG: Generated multi-table setup code ({len(result)} chars)")
+    return result
 
 
 def _clean_equation(equation: str) -> str:
@@ -342,26 +393,19 @@ def _clean_equation(equation: str) -> str:
 
 def _extract_numerical_result(text: str) -> Union[float, str]:
     """Extract numerical result from text."""
-    # Look for numbers in the text
     import re
-
-    # Try to find numbers
     number_patterns = [
-        r'\d+\.?\d*',  # Basic decimal numbers
-        r'\$[\d,]+\.?\d*',  # Currency
-        r'[\d,]+\.?\d*%',  # Percentages
+        r'\d+\.?\d*', 
+        r'\$[\,\d]+\.?\d*', 
+        r'[\,\d]+\.?\d*%', 
     ]
-
     for pattern in number_patterns:
         matches = re.findall(pattern, text)
         if matches:
-            # Take the last match (often the result)
             last_match = matches[-1]
-            # Clean and convert
             cleaned = last_match.replace('$', '').replace(',', '').replace('%', '')
             try:
                 return float(cleaned)
             except:
                 continue
-
-    return text  # Return original if no number found
+    return text

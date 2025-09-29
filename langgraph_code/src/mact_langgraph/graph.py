@@ -56,14 +56,24 @@ def check_termination(state: MACTState) -> Literal["planner", "answer_aggregator
     """
     Check if the reasoning process should continue or terminate.
 
+    Priority: finished > halted > continue
+    This matches the original MACT logic where Finish action takes precedence.
+
     Args:
         state: Current MACT state
 
     Returns:
         Name of the next node to execute
     """
-    if state.get("is_finished", False) or state.get("is_halted", False):
+    # Priority 1: If finished (Finish action executed), go to answer aggregator
+    if state.get("is_finished", False):
         return "answer_aggregator"
+
+    # Priority 2: If halted (error or step limit), go to answer aggregator
+    elif state.get("is_halted", False):
+        return "answer_aggregator"
+
+    # Priority 3: Continue reasoning
     else:
         return "planner"
 
@@ -133,6 +143,7 @@ def create_mact_graph() -> StateGraph:
     workflow.add_edge("answer_aggregator", END)
 
     # Compile the graph
+    # Note: recursion_limit is set at runtime in MACTGraph class
     return workflow.compile()
 
 
@@ -165,7 +176,11 @@ class MACTGraph:
             Final state after graph execution
         """
         try:
-            result = await self.graph.ainvoke(initial_state)
+            # Set recursion limit for this execution
+            result = await self.graph.ainvoke(
+                initial_state,
+                config={"recursion_limit": 50}
+            )
             return result
         except Exception as e:
             # Handle execution errors

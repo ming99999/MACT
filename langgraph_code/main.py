@@ -18,10 +18,14 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 from mact_langgraph.graph import MACTGraph
 from mact_langgraph.state import create_initial_state
 from mact_langgraph.utils.mmqa_utils import (
-    load_mmqa_dataset, format_mmqa_item_for_processing,
+    load_mmqa_dataset, load_dataset_universal, format_mmqa_item_for_processing,
     create_mmqa_config, calculate_mmqa_metrics
 )
 from mact_langgraph.utils.table_utils import exact_match
+from mact_langgraph.utils.result_utils import (
+    generate_result_filename, save_prediction_item,
+    calculate_comprehensive_metrics, save_metrics
+)
 
 
 def setup_environment():
@@ -110,7 +114,7 @@ async def process_single_item(item: Dict[str, Any], config: Dict[str, Any], grap
 
 
 async def main_async(args):
-    """Main async execution function."""
+    """Main async execution function with improved storage system."""
     print("MACT LangGraph - MMQA Processing")
     print("=" * 50)
 
@@ -119,7 +123,7 @@ async def main_async(args):
 
     # Load dataset
     print(f"Loading dataset from: {args.dataset_path}")
-    dataset = load_mmqa_dataset(args.dataset_path)
+    dataset = load_dataset_universal(args.dataset_path)
 
     if not dataset:
         print("Error: No valid items found in dataset")
@@ -150,11 +154,23 @@ async def main_async(args):
         print(f"  {key}: {value}")
     print()
 
+    # Generate result filenames
+    dataset_name = os.path.splitext(os.path.basename(args.dataset_path))[0]
+    model_name = f"{args.plan_model}+{args.code_model}" if args.plan_model != args.code_model else args.plan_model
+    predictions_file, metrics_file = generate_result_filename(model_name, dataset_name, args.output_dir)
+
+    print(f"Output files:")
+    print(f"  Predictions: {predictions_file}")
+    print(f"  Metrics: {metrics_file}")
+    print()
+
     # Create MACT graph
     graph = MACTGraph(config)
 
-    # Process items
-    results = []
+    # Process items with streaming save
+    import time
+    start_time = time.time()
+
     for i, item in enumerate(dataset):
         print(f"\nProcessing item {i+1}/{len(dataset)}")
         print(f"Question: {item['Question'][:100]}...")
@@ -163,9 +179,21 @@ async def main_async(args):
         formatted_item = format_mmqa_item_for_processing(item)
 
         # Process the item
+        item_start_time = time.time()
         result = await process_single_item(formatted_item, config, graph)
+        execution_time = time.time() - item_start_time
 
-        results.append(result)
+        # Add additional metadata
+        result.update({
+            "execution_time": execution_time,
+            "plan_model": args.plan_model,
+            "code_model": args.code_model,
+            "reward_type": args.reward_type,
+            "include_details": not args.minimal_output  # For large datasets, can exclude details
+        })
+
+        # Save prediction immediately (streaming for large datasets)
+        save_prediction_item(result, predictions_file)
 
         # Print progress
         if result['correct']:
@@ -179,51 +207,77 @@ async def main_async(args):
         print(f"Predicted: {result['predicted']}")
         print(f"Target: {result['target']}")
 
-        # Running statistics
-        correct_count = sum(1 for r in results if r['correct'])
-        accuracy = correct_count / len(results)
-        print(f"Running accuracy: {accuracy:.3f} ({correct_count}/{len(results)})")
+        # Calculate running statistics from saved predictions
+        if (i + 1) % 10 == 0 or i == len(dataset) - 1:  # Every 10 items or last item
+            temp_metrics = calculate_comprehensive_metrics(predictions_file)
+            basic_metrics = temp_metrics.get("basic_metrics", {})
+            print(f"Running accuracy: {basic_metrics.get('accuracy', 0):.3f} ({basic_metrics.get('correct', 0)}/{basic_metrics.get('total', 0)})")
 
-        # Save intermediate results
-        if args.save_intermediate and (i + 1) % args.save_every == 0:
-            intermediate_path = f"{args.output_path}.intermediate_{i+1}.json"
-            with open(intermediate_path, 'w') as f:
-                json.dump(results, f, indent=2)
-            print(f"Saved intermediate results to: {intermediate_path}")
+    total_time = time.time() - start_time
 
-    # Calculate final metrics
-    metrics = calculate_mmqa_metrics(results)
-
-    # Print final results
+    # Calculate final comprehensive metrics
     print("\n" + "=" * 50)
-    print("FINAL RESULTS")
+    print("CALCULATING FINAL METRICS...")
     print("=" * 50)
-    print(f"Total items: {metrics['total']}")
-    print(f"Correct: {metrics['correct']}")
-    print(f"Accuracy: {metrics['exact_match']:.3f}")
 
-    # Error analysis
-    error_count = sum(1 for r in results if r['has_error'])
-    if error_count > 0:
-        print(f"Errors: {error_count}")
+    metrics = calculate_comprehensive_metrics(predictions_file)
+    basic_metrics = metrics.get("basic_metrics", {})
+    performance_metrics = metrics.get("performance_metrics", {})
+    error_analysis = metrics.get("error_analysis", {})
 
-    # Save final results
-    output_data = {
-        'config': config,
-        'metrics': metrics,
-        'results': results,
-        'summary': {
-            'total_items': len(results),
-            'correct_answers': metrics['correct'],
-            'accuracy': metrics['exact_match'],
-            'error_count': error_count
+    # Print comprehensive results
+    print(f"\n📊 FINAL RESULTS")
+    print("=" * 50)
+    print(f"Total items: {basic_metrics.get('total', 0)}")
+    print(f"Correct: {basic_metrics.get('correct', 0)}")
+    print(f"Accuracy: {basic_metrics.get('accuracy', 0):.3f}")
+    print(f"Error rate: {basic_metrics.get('error_rate', 0):.3f}")
+    print(f"Average steps: {performance_metrics.get('avg_steps', 0):.1f}")
+    print(f"Average confidence: {performance_metrics.get('avg_confidence', 0):.2f}")
+    print(f"Total execution time: {total_time:.1f}s")
+
+    if error_analysis.get("error_count", 0) > 0:
+        print(f"\n🚨 Error Analysis:")
+        print(f"Total errors: {error_analysis['error_count']}")
+        for error_type, count in error_analysis.get("error_types", {}).items():
+            print(f"  {error_type}: {count}")
+
+    # Add experiment metadata to config
+    config.update({
+        "experiment_metadata": {
+            "dataset_path": args.dataset_path,
+            "dataset_size": len(dataset),
+            "total_execution_time": total_time,
+            "processing_date": time.strftime("%Y-%m-%d %H:%M:%S")
         }
-    }
+    })
 
-    with open(args.output_path, 'w') as f:
-        json.dump(output_data, f, indent=2)
+    # Save comprehensive metrics
+    save_metrics(metrics, config, metrics_file)
 
-    print(f"\nResults saved to: {args.output_path}")
+    print(f"\n💾 Results saved:")
+    print(f"  📋 Predictions: {predictions_file}")
+    print(f"  📈 Metrics: {metrics_file}")
+
+    # Backward compatibility: save legacy format if requested
+    if args.legacy_output:
+        from src.mact_langgraph.utils.mmqa_utils import load_predictions_for_analysis
+        predictions = load_predictions_for_analysis(predictions_file)
+        legacy_data = {
+            'config': config,
+            'metrics': basic_metrics,
+            'results': predictions[:100],  # Limit for legacy compatibility
+            'summary': {
+                'total_items': basic_metrics.get('total', 0),
+                'correct_answers': basic_metrics.get('correct', 0),
+                'accuracy': basic_metrics.get('accuracy', 0),
+                'error_count': error_analysis.get('error_count', 0)
+            }
+        }
+        legacy_path = args.output_path or "results.json"
+        with open(legacy_path, 'w') as f:
+            json.dump(legacy_data, f, indent=2)
+        print(f"  🔄 Legacy format: {legacy_path}")
 
 
 def main():
@@ -235,6 +289,12 @@ def main():
                         help="Path to MMQA dataset JSON file")
     parser.add_argument('--output_path', type=str, default="results.json",
                         help="Path to save results")
+    parser.add_argument('--output_dir', type=str, default="results",
+                        help="Directory to save result files")
+    parser.add_argument('--minimal_output', action='store_true',
+                        help="Exclude detailed logs for large datasets")
+    parser.add_argument('--legacy_output', action='store_true',
+                        help="Also save results in legacy JSON format")
 
     # Model arguments
     parser.add_argument('--plan_model', type=str, default="gpt-3.5-turbo",
