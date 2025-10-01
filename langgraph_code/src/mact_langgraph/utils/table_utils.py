@@ -58,8 +58,46 @@ def table_linear(table: List[List[Any]], num_row: int = None) -> str:
     return output
 
 
-def table2df(table: List[List[Any]]) -> str:
-    """Convert table to pandas DataFrame code string."""
+def normalize_column_name(col_name: str) -> str:
+    """
+    🎯 Bug Fix #1: Normalize column names to consistent lowercase format.
+    This fixes JOIN failures caused by case mismatches (e.g., 'Department_ID' vs 'department_ID').
+
+    Examples:
+        'Department_ID' -> 'department_id'
+        'department_ID' -> 'department_id'
+        'Host_city_ID' -> 'host_city_id'
+        'temporary_acting' -> 'temporary_acting'
+    """
+    if not col_name:
+        return col_name
+
+    normalized = col_name.strip()
+
+    # Special handling for ID columns (most common JOIN issue)
+    # Pattern: [prefix]_ID or [prefix]_Id or [prefix]ID
+    id_pattern = re.compile(r'(.+?)_?([Ii][Dd])$')
+    match = id_pattern.match(normalized)
+    if match:
+        prefix = match.group(1)
+        # Normalize: prefix_id (all lowercase with underscore)
+        return f"{prefix.lower()}_id"
+
+    # General case: lowercase all
+    return normalized.lower()
+
+
+def table2df(table: List[List[Any]], normalize_columns: bool = True) -> str:
+    """
+    Convert table to pandas DataFrame code string.
+
+    Args:
+        table: List of lists representing table data (first row is header)
+        normalize_columns: If True, normalize column names to lowercase (fixes Bug #1)
+
+    Returns:
+        Python code string that creates a pandas DataFrame
+    """
     if not table or len(table) == 0:
         return "import pandas as pd\ndf = pd.DataFrame()"
 
@@ -67,6 +105,10 @@ def table2df(table: List[List[Any]]) -> str:
     header = table[0]
     header = [clean_cell(cell, i, header=True) for i, cell in enumerate(header)]
     header = check_header(header)
+
+    # 🎯 Bug Fix #1: Normalize column names to prevent JOIN failures
+    if normalize_columns:
+        header = [normalize_column_name(col) for col in header]
 
     rows = table[1:]
     rows_ = []

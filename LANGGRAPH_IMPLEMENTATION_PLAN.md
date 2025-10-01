@@ -357,9 +357,38 @@ multiprocessing
 - 프로덕션 환경 배포 가능
 - 성능 지표 모니터링 체계 구축
 
-## 7. 상세 구현 계획
+## 7. 성능 최적화
 
-### 7.1 상태 스키마 구현
+### 7.1 Phase 1: 초기 속도 및 안정성 확보
+
+*   **목표**: 40분 이상 소요되던 전체 데이터셋 실행 시간을 단축하고, 불안정한 추론 과정을 안정화하여 재구현된 코드의 실행 가능성을 검증.
+*   **결과**: 전체 실행 시간을 약 19% 단축(43분 -> 35분)하고, 모든 데이터셋 항목을 오류 없이 완주하는 안정성을 확보.
+
+#### 완료된 작업 상세:
+
+1.  **문제 원인 분석**:
+    *   **느린 속도**: LLM이 잘못된 코드를 생성하고, 시스템이 이를 여러 번 재호출하는 '순차 재시도' 로직이 원인임을 파악. 이는 원본 MACT의 '일괄 생성' 방식과 달라 비효율적임.
+    *   **추론 실패**: Qwen 모델이 ReAct 규칙을 무시하고 도구 사용 없이 바로 `Finish` 액션을 호출하는 경향을 발견.
+
+2.  **프롬프트 강화**:
+    *   `prompt_utils.py`의 Qwen 모델 전용 시스템 프롬프트(`REACT_SYSTEM_PROMPT_QWEN`)를 수정.
+    *   "도구를 먼저 사용할 것", "Finish로 시작하지 말 것" 등 명시적인 규칙을 추가하여 ReAct 프레임워크 준수를 강제.
+    *   **결과**: 이 수정으로 모델이 추론 단계를 시작하고 도구를 사용하게 되었으나, 코드 품질이 낮아 실행 오류가 빈번했음.
+
+3.  **코드 자동 클리닝 기능 구현**:
+    *   `table_utils.py`에 `clean_qwen_code` 유틸리티 함수를 추가.
+    *   LLM이 생성한 코드에서 실행을 방해하는 자연어 설명, 잘못된 주석 등을 프로그래밍 방식으로 제거.
+    *   `extract_code_from_response` 함수를 수정하여 Qwen 모델 사용 시 이 클리닝 기능이 자동으로 동작하도록 연결.
+
+4.  **API 호출 로직 최적화 (원본 MACT 로직 복원)**:
+    *   `tool_nodes.py`의 `retriever_tool_node`와 `operator_tool_node`를 대대적으로 리팩토링.
+    *   **(기존)**: 코드 생성 실패 시 매번 API를 새로 호출하는 비효율적인 방식.
+    *   **(변경)**: 원본 MACT처럼 `llm.abatch()`를 사용해 한 번의 API 요청으로 `code_sample` 개수만큼의 코드 후보를 병렬로 받아오도록 수정. API 호출 횟수를 1/N으로 줄여 속도 개선 및 비용 절감.
+    *   **결과**: 이 로직 수정으로 LangGraph 구현이 원본 MACT와 동일한 효율적인 동작 방식을 갖게 되었으며, 최종적으로 안정적인 실행과 속도 개선을 달성.
+
+## 8. 상세 구현 계획
+
+### 8.1 상태 스키마 구현
 ```python
 from typing import TypedDict, List, Dict, Any, Optional
 from dataclasses import dataclass
@@ -445,7 +474,7 @@ class MACTState(TypedDict):
     answer_threshold: float
 ```
 
-### 7.2 노드 구현 예시
+### 8.2 노드 구현 예시
 ```python
 from langgraph.graph import StateGraph, END
 from langchain_openai import ChatOpenAI
@@ -583,7 +612,7 @@ def route_action(state: MACTState) -> str:
         return "answer_aggregator"
 ```
 
-### 7.3 MMQA 특화 처리
+### 8.3 MMQA 특화 처리
 ```python
 def process_mmqa_tables(tables_data: List[Dict]) -> List[TableInfo]:
     """MMQA 테이블 데이터 처리"""
@@ -651,37 +680,39 @@ def build_multi_table_prompt(state: MACTState) -> str:
         "- Search[query]: Search external knowledge",
         "- Finish[answer]: Provide final answer",
         "",
-        f"Current reasoning:\n{state['scratchpad']}",
+        f"Current reasoning:
+{state['scratchpad']}",
         "",
         "Think step by step and choose your next action."
     ])
 
-    return "\n".join(prompt_parts)
+    return "
+".join(prompt_parts)
 ```
 
-## 8. 성능 및 품질 지표
+## 9. 성능 및 품질 지표
 
-### 8.1 성능 지표
+### 9.1 성능 지표
 - **정확도**: MMQA 테스트셋에서 Exact Match 정확도
 - **실행 시간**: 질문당 평균 처리 시간
 - **토큰 사용량**: LLM API 호출 비용
 - **메모리 사용량**: 피크 메모리 사용량
 - **처리량**: 분당 처리 가능한 질문 수
 
-### 8.2 품질 지표
+### 9.2 품질 지표
 - **코드 커버리지**: 90% 이상
 - **타입 안정성**: mypy 검사 통과
 - **문서화**: 모든 공개 함수 docstring 작성
 - **테스트**: 단위/통합/E2E 테스트 완비
 
-### 8.3 비교 기준
+### 9.3 비교 기준
 - **기존 MACT**: 동일 조건에서 성능 비교
 - **단순 LLM**: Direct prompting 대비 성능 향상
 - **다른 프레임워크**: LangChain Agent 등과 비교
 
-## 9. 리스크 및 대응 방안
+## 10. 리스크 및 대응 방안
 
-### 9.1 기술적 리스크
+### 10.1 기술적 리스크
 **리스크**: LangGraph 학습 곡선
 - **대응**: 단계별 구현 및 공식 문서 활용
 
@@ -691,25 +722,25 @@ def build_multi_table_prompt(state: MACTState) -> str:
 **리스크**: MMQA 데이터 특성으로 인한 복잡성
 - **대응**: 단계별 검증 및 테스트 케이스 확충
 
-### 9.2 일정 리스크
+### 10.2 일정 리스크
 **리스크**: 예상보다 긴 개발 시간
 - **대응**: 최소 기능(MVP) 우선 구현 후 점진적 개선
 
 **리스크**: 통합 문제로 인한 지연
 - **대응**: 조기 통합 테스트 및 CI/CD 구축
 
-## 10. 향후 확장 계획
+## 11. 향후 확장 계획
 
-### 10.1 추가 데이터셋 지원
+### 11.1 추가 데이터셋 지원
 - WTQ, TAT, CRT, SciTab 등 다른 테이블 QA 데이터셋
 - 데이터셋별 특화 노드 및 처리 로직
 
-### 10.2 고급 기능
+### 11.2 고급 기능
 - 적응형 샘플링 (동적 plan_sample 조절)
 - 학습 기반 보상 함수
 - 멀티모달 입력 지원 (이미지 테이블 등)
 
-### 10.3 배포 최적화
+### 11.3 배포 최적화
 - 서버리스 배포 (AWS Lambda, Google Cloud Functions)
 - 컨테이너화 및 Kubernetes 배포
 - 실시간 API 서비스

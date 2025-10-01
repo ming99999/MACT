@@ -27,8 +27,7 @@ from ..utils.prompt_utils import build_code_generation_prompt
 async def retriever_tool_node(state: MACTState) -> MACTState:
     """
     Retrieve data from tables based on specified conditions.
-    Phase 3-B: Fixed logic to properly interpret 'Show X' vs 'Filter X' instructions.
-    Now persists the resulting table back into the state.
+    🎯 Bug Fix #2: Enhanced with multi-table detection to delegate to operator when needed.
     """
     instruction = state["current_argument"]
     tables = get_tables_from_state(state)
@@ -43,9 +42,53 @@ async def retriever_tool_node(state: MACTState) -> MACTState:
             "execution_log": state["execution_log"] + ["ERROR: No tables in state"]
         }
 
+    # 🎯 Bug Fix #2: Detect if instruction mentions multiple tables
+    instruction_lower = instruction.lower()
+    table_keywords = {
+        'department': ['department', 'dept'],
+        'management': ['management', 'manager', 'head', 'acting'],
+        'city': ['city', 'cities'],
+        'farm_competition': ['competition', 'farm', 'host'],
+        'student': ['student'],
+        'course': ['course', 'class'],
+        'people': ['people', 'person'],
+        'candidate': ['candidate'],
+        'head': ['head'],
+    }
+
+    mentioned_table_types = []
+    for table_type, keywords in table_keywords.items():
+        if any(kw in instruction_lower for kw in keywords):
+            mentioned_table_types.append(table_type)
+
+    # Check if multi-table operation (JOIN likely needed)
+    multi_table_indicators = [
+        ' and ', ' with ', ' from ', ' join',
+        'both', 'together', 'combine', 'merge'
+    ]
+    likely_multi_table = (
+        len(mentioned_table_types) >= 2 or
+        any(indicator in instruction_lower for indicator in multi_table_indicators)
+    )
+
+    if likely_multi_table and len(tables) >= 2:
+        # Delegate to operator for multi-table operations
+        log_msg = f"🔄 Multi-table retrieval detected - delegating to Operator: {instruction[:80]}..."
+        print(log_msg)
+
+        # Update state to call operator instead
+        state_for_operator = {
+            **state,
+            "current_action_type": ActionType.OPERATOR.value,
+            "current_argument": f"Retrieve data for: {instruction}",
+            "execution_log": state["execution_log"] + [log_msg]
+        }
+        return await operator_tool_node(state_for_operator)
+
+    # Single-table retrieval (original logic)
     # Use the latest table in the list for operations
     table_df_code = tables[-1].df_code if tables else ""
-    debug_log = f"Retriever debug: Using table {len(tables)-1}, df_code length: {len(table_df_code)}"
+    debug_log = f"Retriever debug: Single-table mode, using table {len(tables)-1}, df_code length: {len(table_df_code)}"
     print(f"DEBUG: {debug_log}")
 
     if not table_df_code:
@@ -240,7 +283,19 @@ async def operator_tool_node(state: MACTState) -> MACTState:
         if not df_setup_code.strip():
             raise ValueError("No DataFrame setup code available for operation")
 
-        # 🎯 Phase 3-B Fix: Improved Operate prompt with robust JOIN examples
+        # 🎯 Bug Fix #1: Extract FK information to guide JOIN operations
+        fk_hints = ""
+        foreign_keys = state.get("foreign_keys", [])
+        if foreign_keys:
+            fk_hints = "\n# Foreign Key Relationships (use these for JOINs):\n"
+            for fk in foreign_keys:
+                # Normalize FK names
+                from ..utils.table_utils import normalize_column_name
+                normalized_fk = normalize_column_name(fk)
+                fk_hints += f"#   - {normalized_fk}\n"
+            fk_hints += "# All column names are normalized to lowercase (e.g., 'department_id', 'host_city_id')\n"
+
+        # 🎯 Bug Fix #1: Enhanced prompt with FK hints and normalized column guidance
         prompt = build_code_generation_prompt(
             f"Perform table operation: {operation}",
             df_setup_code,
@@ -248,13 +303,15 @@ async def operator_tool_node(state: MACTState) -> MACTState:
             examples=f"""
 # IMPORTANT: Always assign final result to 'new_table' variable
 # Available tables: df1, df2, df3, etc. and primary df
-
+{fk_hints}
 # Common operations:
-# JOIN: new_table = df1.merge(df2, left_on='col1', right_on='col2', how='inner')
+# JOIN: new_table = df1.merge(df2, on='department_id', how='inner')  # Use normalized column names
+# JOIN (different names): new_table = df1.merge(df2, left_on='col1', right_on='col2', how='inner')
 # FILTER: new_table = df[df['column'] == 'value']
 # GROUP BY: new_table = df.groupby('column').agg({{'target_col': 'sum'}}).reset_index()
 # SELECT: new_table = df[['col1', 'col2', 'col3']]
 
+# ⚠️ CRITICAL: All column names are LOWERCASE (e.g., 'department_id', not 'Department_ID')
 # For multi-table operations, use df1, df2, etc.
 # Current operation: {operation}
 new_table = df  # Replace with appropriate operation

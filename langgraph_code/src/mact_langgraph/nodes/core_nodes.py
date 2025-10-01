@@ -257,37 +257,45 @@ async def action_selector_node(state: MACTState) -> MACTState:
     """
     candidates = get_candidates_from_state(state)
 
-    # 🎯 Phase 3-C Fix: Prevent first-step Finish actions (critical bug fix)
+    # 🎯 Bug Fix #3: STRICTLY prevent first-step Finish actions
     current_step = state.get("current_step", 1)
-    if current_step == 1:
-        # Filter out Finish actions on the first step
-        non_finish_candidates = []
-        for candidate in candidates:
-            if candidate.action_type != ActionType.FINISH:
-                non_finish_candidates.append(candidate)
-            else:
-                # Log rejected first-step Finish
-                log_msg = f"Rejected first-step Finish action: {candidate.action[:50]}..."
-                state["execution_log"] = state["execution_log"] + [log_msg]
+    original_candidate_count = len(candidates)
 
-        if non_finish_candidates:
-            candidates = non_finish_candidates
-            print(f"DEBUG: Filtered out {len(get_candidates_from_state(state)) - len(non_finish_candidates)} first-step Finish actions")
-        else:
-            # All candidates were Finish actions - force a Retrieve action instead
-            print("DEBUG: All first-step candidates were Finish - forcing Retrieve action")
+    if current_step == 1:
+        # STRICTLY filter out all Finish actions on first step
+        candidates = [c for c in candidates if c.action_type != ActionType.FINISH]
+
+        filtered_count = original_candidate_count - len(candidates)
+        if filtered_count > 0:
+            log_msg = f"🚫 BLOCKED {filtered_count} first-step Finish action(s) - Step 1 requires data gathering"
+            print(log_msg)
+            state = {**state, "execution_log": state["execution_log"] + [log_msg]}
+
+        # If ALL candidates were Finish, force a Retrieve action
+        if len(candidates) == 0:
+            fallback_msg = "⚠️ All actions were Finish at step 1. Forcing Retrieve action."
+            print(fallback_msg)
+
             from ..state import ActionCandidate
             forced_candidate = ActionCandidate(
-                action="Retrieve[Show table data]",
+                action="Retrieve[examine available table data]",
                 action_type=ActionType.RETRIEVE,
-                thought="I need to examine the table data first before providing an answer.",
-                argument="Show table data",
-                confidence=1.0,
+                thought="I need to first examine the available data to answer this question.",
+                argument="examine available table data",
                 score=1.0
             )
             candidates = [forced_candidate]
-            log_msg = "Forced Retrieve action to prevent invalid first-step Finish"
-            state["execution_log"] = state["execution_log"] + [log_msg]
+            state = {**state, "execution_log": state["execution_log"] + [fallback_msg]}
+
+    # 🎯 Bug Fix #3 Extended: Also block Finish at step 2 if no tools used
+    elif current_step == 2 and len(state.get("tool_results", [])) == 0:
+        original_count = len(candidates)
+        candidates = [c for c in candidates if c.action_type != ActionType.FINISH]
+
+        if original_count != len(candidates):
+            log_msg = f"🚫 BLOCKED Finish at step 2 - No tools used yet (must use at least 1 tool)"
+            print(log_msg)
+            state = {**state, "execution_log": state["execution_log"] + [log_msg]}
 
     # Early termination: if we have successful candidates and high confidence, use the first good one
     config = state.get("config", {})
