@@ -26,6 +26,81 @@ from ..utils.action_utils import parse_thought_action, parse_action, extract_fro
 from ..utils.table_utils import normalize_answer, exact_match
 
 
+async def generate_plan_batch(llm, prompt: str, n: int, model_name: str = None) -> List[str]:
+    """
+    🎯 Fix #3: Generate multiple action plans in ONE API call (Original MACT style)
+
+    Uses OpenAI's n parameter to generate correlated samples for consistency reward.
+
+    Args:
+        llm: LangChain LLM instance
+        prompt: Planning prompt
+        n: Number of samples to generate
+        model_name: Model name
+
+    Returns:
+        List of raw LLM response strings
+    """
+    try:
+        if hasattr(llm, 'client'):
+            print(f"🔍 DEBUG Planning: Attempting batch API with n={n}")
+            from openai import AsyncOpenAI
+
+            api_key = llm.openai_api_key.get_secret_value() if hasattr(llm, 'openai_api_key') and llm.openai_api_key else None
+            base_url = llm.openai_api_base if hasattr(llm, 'openai_api_base') else None
+
+            print(f"🔍 DEBUG Planning: API base_url={base_url}")
+
+            client = AsyncOpenAI(
+                api_key=api_key,
+                base_url=base_url,
+                timeout=600.0  # 10 minutes for cold start
+            )
+
+            print(f"🔍 DEBUG Planning: Calling batch API with model={model_name or llm.model_name}")
+            response = await client.chat.completions.create(
+                model=model_name or llm.model_name,
+                messages=[{"role": "user", "content": prompt}],
+                n=n,
+                temperature=0.6,
+                max_tokens=1500
+            )
+
+            print(f"🔍 DEBUG Planning: Response received, type={type(response)}")
+            print(f"🔍 DEBUG Planning: Response={response}")
+            print(f"🔍 DEBUG Planning: Response dict={response.model_dump() if hasattr(response, 'model_dump') else 'N/A'}")
+            print(f"🔍 DEBUG Planning: Has choices={hasattr(response, 'choices')}")
+            if hasattr(response, 'choices'):
+                print(f"🔍 DEBUG Planning: Choices={response.choices}")
+                print(f"🔍 DEBUG Planning: Choices length={len(response.choices) if response.choices else 'None'}")
+
+            if response and response.choices:
+                responses = [choice.message.content for choice in response.choices if choice.message.content]
+                if responses:
+                    print(f"🎯 Planning Batch API: Generated {len(responses)} plans in 1 call")
+                    return responses
+
+            # If batch API didn't work, fall through to fallback
+            print(f"⚠️ DEBUG Planning: Batch API returned empty, falling through")
+            raise ValueError("Batch API returned no valid responses")
+
+        else:
+            print(f"⚠️ Fallback: Using sequential calls ({n} calls)")
+            responses = []
+            for _ in range(n):
+                response = await llm.ainvoke(prompt)
+                responses.append(response.content)
+            return responses
+
+    except Exception as e:
+        print(f"⚠️ Batch planning failed: {e}, using fallback")
+        responses = []
+        for _ in range(n):
+            response = await llm.ainvoke(prompt)
+            responses.append(response.content)
+        return responses
+
+
 def create_llm(model_name: str) -> ChatOpenAI:
     """
     Create LLM instance with support for OpenAI and RunPod vLLM.
@@ -157,17 +232,21 @@ async def planner_node(state: MACTState) -> MACTState:
     candidates = []
     plan_sample = state["plan_sample"]
 
+    # 🎯 Fix #2: Extract LLM observations for hybrid voting (Original MACT style)
+    llm_observations = []
+    current_step = state["current_step"]
+
     # 🎯 Phase 2-B: 기존 MACT처럼 배치 API 호출로 성능 개선
     # LOGP reward를 위해 logprobs도 수집
     reward_type = state.get("reward_type", "consistency")
     logprobs_enabled = reward_type == "logp"
 
     try:
-        # Use sequential approach matching original MACT logic
-        for i in range(plan_sample):
-            response = await llm.ainvoke(prompt)
-            content = response.content
+        # 🎯 Fix #3: Use batch API for correlated samples (Original MACT style)
+        raw_responses = await generate_plan_batch(llm, prompt, plan_sample, state["plan_model"])
 
+        import re
+        for i, content in enumerate(raw_responses):
             try:
                 # Parse thought and action
                 thought, action = parse_thought_action(content)
@@ -182,10 +261,19 @@ async def planner_node(state: MACTState) -> MACTState:
                             action=action,
                             action_type=ActionType(action_type),
                             argument=argument,
-                            score=0.0,  # Default score for sequential approach
+                            score=0.0,
                             raw_response=content
                         )
                         candidates.append(candidate)
+
+                        # 🎯 Fix #2: Extract LLM-predicted observations from raw response
+                        obs_pattern = rf"Observation {current_step}:\s*(.+?)(?=\n(?:Thought|Action|$))"
+                        obs_matches = re.findall(obs_pattern, content, re.DOTALL | re.IGNORECASE)
+                        for obs_text in obs_matches:
+                            obs_text = obs_text.strip()
+                            if obs_text and len(obs_text) > 0:
+                                formatted_obs = f"Observation {current_step}: {obs_text}"
+                                llm_observations.append(formatted_obs)
 
             except Exception as e:
                 # Log error but continue with other candidates
@@ -238,8 +326,13 @@ async def planner_node(state: MACTState) -> MACTState:
     # Update state with candidates
     updated_state = update_state_with_candidates(state, candidates)
 
+    # 🎯 Fix #2: Store LLM observations for hybrid voting
+    updated_state["llm_observations"] = llm_observations
+
     # Log planning step
     log_entry = f"Generated {len(candidates)} candidate actions for step {state['current_step']}"
+    if llm_observations:
+        log_entry += f" (extracted {len(llm_observations)} LLM observations)"
     updated_state["execution_log"] = updated_state["execution_log"] + [log_entry]
 
     return updated_state

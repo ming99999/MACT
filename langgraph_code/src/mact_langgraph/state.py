@@ -145,8 +145,8 @@ class MACTState(TypedDict):
     search_results: List[str]
     table_operations: List[str]
 
-    # 🎯 Phase 1 Fix: LLM observations for hybrid voting
-    llm_observations: List[str]  # Store LLM-generated observations for majority voting
+    # 🎯 Fix #2: LLM observations from action planning (Original MACT style)
+    llm_observations: List[str]
 
     # Answer tracking
     preliminary_answers: List[str]
@@ -259,7 +259,9 @@ def create_initial_state(
         calculation_results=[],
         search_results=[],
         table_operations=[],
-        llm_observations=[],  # 🎯 Phase 1: Initialize LLM observations
+
+        # LLM observations
+        llm_observations=[],
 
         # Answer tracking
         preliminary_answers=[],
