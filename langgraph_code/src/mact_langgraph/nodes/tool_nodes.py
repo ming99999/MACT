@@ -530,22 +530,47 @@ print(result)
 
 
 def _build_multi_table_df_code(tables: List[TableInfo]) -> str:
-    """Build DataFrame setup code for multiple tables (기존 MACT 방식)."""
+    """
+    Build DataFrame setup code for multiple tables (Phase 2C Step 1: 원본 MACT 방식).
+
+    핵심 원칙:
+    - 항상 최신 테이블을 'df'로 제공 (단순성)
+    - 이전 테이블들은 테이블 이름 기반 변수로 제공 (안정성)
+    - 원본 MACT처럼 항상 하나의 결과에 집중
+    """
     if not tables:
         return ""
+
     setup_lines = ["import pandas as pd", "import numpy as np"]
-    for i, table in enumerate(tables):
-        # Use the latest df_code for each table
-        df_code = table.df_code
-        # Modify variable name for multi-table setup
-        modified_code = df_code.replace("df=pd.DataFrame(data)", f"df{i+1}=pd.DataFrame(data)")
-        setup_lines.append(modified_code)
-    if len(tables) >= 1:
-        setup_lines.append("df = df1  # Primary table")
-    if len(tables) >= 2:
-        setup_lines.append("# Additional tables: df2, df3, etc.")
+
+    if len(tables) == 1:
+        # Single table: 최신 테이블만 'df'로
+        latest_table = tables[0]
+        setup_lines.append(latest_table.df_code)  # 이미 "df = pd.DataFrame(...)" 형태
+    else:
+        # Multi-table: 이전 테이블들은 이름 기반, 최신은 'df'
+        for i, table in enumerate(tables[:-1]):  # 최신 제외한 이전 테이블들
+            # 테이블 이름 기반 변수명 (안정적)
+            table_name = table.name.lower().replace(' ', '_').replace('-', '_')
+            table_var = f"df_{table_name}"
+
+            # df_code의 'df=' 부분을 테이블 특정 변수명으로 변경
+            df_code = table.df_code
+            modified_code = df_code.replace("df=pd.DataFrame(data)", f"{table_var}=pd.DataFrame(data)")
+            setup_lines.append(modified_code)
+
+        # 최신 테이블은 항상 'df'로 (원본 MACT 방식)
+        latest_table = tables[-1]
+        setup_lines.append(latest_table.df_code)  # "df = pd.DataFrame(...)"
+
+        # 힌트 추가
+        if len(tables) >= 2:
+            table_vars = [f"df_{t.name.lower().replace(' ', '_').replace('-', '_')}" for t in tables[:-1]]
+            setup_lines.append(f"# Previous tables available: {', '.join(table_vars)}")
+            setup_lines.append("# Current table: df")
+
     result = "\n".join(setup_lines)
-    print(f"DEBUG: Generated multi-table setup code ({len(result)} chars)")
+    print(f"DEBUG: [Phase 2C Step 1] Generated setup code ({len(result)} chars, {len(tables)} tables)")
     return result
 
 
