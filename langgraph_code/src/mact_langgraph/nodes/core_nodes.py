@@ -58,6 +58,12 @@ async def generate_plan_batch(llm, prompt: str, n: int, model_name: str = None) 
             )
 
             print(f"🔍 DEBUG Planning: Calling batch API with model={model_name or llm.model_name}")
+
+            # Check if this is a Qwen model for post-processing
+            is_qwen = "qwen" in (model_name or llm.model_name).lower()
+            if is_qwen:
+                print(f"🔍 DEBUG Planning: Qwen model detected - will strip <think> tags in post-processing")
+
             response = await client.chat.completions.create(
                 model=model_name or llm.model_name,
                 messages=[{"role": "user", "content": prompt}],
@@ -76,6 +82,22 @@ async def generate_plan_batch(llm, prompt: str, n: int, model_name: str = None) 
 
             if response and response.choices:
                 responses = [choice.message.content for choice in response.choices if choice.message.content]
+
+                # Post-process Qwen responses to remove <think> tags
+                if is_qwen and responses:
+                    import re
+                    cleaned_responses = []
+                    for resp in responses:
+                        # Remove everything between <think> and </think> (including tags)
+                        cleaned = re.sub(r'<think>.*?</think>', '', resp, flags=re.DOTALL)
+                        # Also remove standalone <think> or </think> tags
+                        cleaned = re.sub(r'</?think>', '', cleaned)
+                        cleaned = cleaned.strip()
+                        if cleaned:
+                            cleaned_responses.append(cleaned)
+                            print(f"🧹 Qwen: Stripped <think> tags ({len(resp)} → {len(cleaned)} chars)")
+                    responses = cleaned_responses
+
                 if responses:
                     print(f"🎯 Planning Batch API: Generated {len(responses)} plans in 1 call")
                     return responses

@@ -61,6 +61,12 @@ async def generate_code_batch(llm, prompt: str, n: int, model_name: str = None) 
             )
 
             print(f"🔍 DEBUG: Calling batch API with model={model_name or llm.model_name}")
+
+            # Check if this is a Qwen model for post-processing
+            is_qwen = "qwen" in (model_name or llm.model_name).lower()
+            if is_qwen:
+                print(f"🔍 DEBUG: Qwen model detected - will strip <think> tags in post-processing")
+
             response = await client.chat.completions.create(
                 model=model_name or llm.model_name,
                 messages=[{"role": "user", "content": prompt}],
@@ -77,6 +83,22 @@ async def generate_code_batch(llm, prompt: str, n: int, model_name: str = None) 
 
             if response and response.choices:
                 codes = [choice.message.content for choice in response.choices if choice.message.content]
+
+                # Post-process Qwen responses to remove <think> tags
+                if is_qwen and codes:
+                    import re
+                    cleaned_codes = []
+                    for code in codes:
+                        # Remove everything between <think> and </think> (including tags)
+                        cleaned = re.sub(r'<think>.*?</think>', '', code, flags=re.DOTALL)
+                        # Also remove standalone <think> or </think> tags
+                        cleaned = re.sub(r'</?think>', '', cleaned)
+                        cleaned = cleaned.strip()
+                        if cleaned:
+                            cleaned_codes.append(cleaned)
+                            print(f"🧹 Qwen: Stripped <think> tags ({len(code)} → {len(cleaned)} chars)")
+                    codes = cleaned_codes
+
                 if codes:
                     print(f"🎯 Batch API: Generated {len(codes)} samples in 1 call (Original MACT style)")
                     return codes

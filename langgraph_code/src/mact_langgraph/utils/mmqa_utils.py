@@ -184,6 +184,7 @@ def create_mmqa_config(
         code_sample: Number of code samples
         max_steps: Maximum reasoning steps
         **kwargs: Additional configuration options
+            use_examples: Whether to include MMQA REACT examples in prompts (default: True)
 
     Returns:
         Configuration dictionary
@@ -200,7 +201,8 @@ def create_mmqa_config(
         'answer_threshold': kwargs.get('answer_threshold', 1.0),
         'long_table_op': kwargs.get('long_table_op', 'ignore'),
         'code_as_observation': kwargs.get('code_as_observation', False),
-        'without_tool': kwargs.get('without_tool', False)
+        'without_tool': kwargs.get('without_tool', False),
+        'use_examples': kwargs.get('use_examples', True)  # Few-shot by default
     }
 
     return config
