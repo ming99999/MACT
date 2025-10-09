@@ -136,6 +136,9 @@ async def main_async(args):
         dataset = dataset[:args.debug_limit]
         print(f"Debug mode: Processing only first {len(dataset)} items")
 
+    # Determine if examples should be used
+    use_examples = not args.no_examples if hasattr(args, 'no_examples') else args.use_examples
+
     # Create configuration
     config = create_mmqa_config(
         plan_model=args.plan_model,
@@ -146,7 +149,8 @@ async def main_async(args):
         max_steps=args.max_steps,
         max_actual_steps=args.max_actual_steps,
         use_pre_answer=args.use_pre_answer,
-        answer_threshold=args.answer_threshold
+        answer_threshold=args.answer_threshold,
+        use_examples=use_examples
     )
 
     print(f"Configuration:")
@@ -320,6 +324,12 @@ def main():
                         help="Use preliminary answers")
     parser.add_argument('--answer_threshold', type=float, default=1.0,
                         help="Answer agreement threshold")
+
+    # Prompt configuration
+    parser.add_argument('--use_examples', action='store_true', default=True,
+                        help="Include MMQA REACT examples in prompts (few-shot)")
+    parser.add_argument('--no_examples', action='store_true',
+                        help="Exclude MMQA REACT examples from prompts (zero-shot)")
 
     # Execution options
     parser.add_argument('--debug', action='store_true',

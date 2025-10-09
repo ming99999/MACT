@@ -125,9 +125,28 @@ def build_react_prompt(state: MACTState) -> str:
     if state["context"]:
         context_section = f"\nContext: {state['context']}\n"
 
+    # Check if examples should be included (defaults to True for backward compatibility)
+    use_examples = state.get("config", {}).get("use_examples", True)
+
     # Use QWEN-optimized prompt for QWEN models
     if "qwen" in state.get("config", {}).get("plan_model", "").lower():
-        prompt = f"""{REACT_SYSTEM_PROMPT_QWEN}
+        # QWEN can now optionally include examples
+        if use_examples:
+            prompt = f"""{REACT_SYSTEM_PROMPT_QWEN}
+
+{MMQA_REACT_EXAMPLES}
+
+Now solve this question:
+
+Question: {state['question']}
+{table_description}
+{context_section}
+Current: {state['scratchpad']}
+
+Next action:"""
+        else:
+            # Zero-shot QWEN prompt (original behavior)
+            prompt = f"""{REACT_SYSTEM_PROMPT_QWEN}
 
 Question: {state['question']}
 {table_description}
@@ -136,10 +155,26 @@ Current: {state['scratchpad']}
 
 Next action:"""
     else:
-        # Standard prompt for other models
-        prompt = f"""{REACT_SYSTEM_PROMPT}
+        # Standard prompt for other models (GPT, etc.)
+        if use_examples:
+            # Few-shot with examples (original behavior)
+            prompt = f"""{REACT_SYSTEM_PROMPT}
 
 {MMQA_REACT_EXAMPLES}
+
+Now solve this question:
+
+Question: {state['question']}
+
+{table_description}
+{context_section}
+Current reasoning:
+{state['scratchpad']}
+
+Think step by step and choose your next action:"""
+        else:
+            # Zero-shot without examples
+            prompt = f"""{REACT_SYSTEM_PROMPT}
 
 Now solve this question:
 
