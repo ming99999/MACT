@@ -1,0 +1,60 @@
+{
+  "experiment_info": {
+    "timestamp": "2025-09-30T23:35:17.144538",
+    "config": {
+      "plan_model": "gpt-3.5-turbo",
+      "code_model": "gpt-3.5-turbo",
+      "reward_type": "consistency",
+      "plan_sample": 3,
+      "code_sample": 3,
+      "max_steps": 6,
+      "max_actual_steps": 6,
+      "use_pre_answer": true,
+      "answer_threshold": 1.0,
+      "long_table_op": "ignore",
+      "code_as_observation": false,
+      "without_tool": false,
+      "experiment_metadata": {
+        "dataset_path": "../datasets_examples/mmqa_samples.json",
+        "dataset_size": 21,
+        "total_execution_time": 332.7891061306,
+        "processing_date": "2025-09-30 23:35:17"
+      }
+    }
+  },
+  "metrics": {
+    "basic_metrics": {
+      "exact_match": 0.19047619047619047,
+      "accuracy": 0.19047619047619047,
+      "correct": 4,
+      "total": 21,
+      "error_rate": 0.3333333333333333
+    },
+    "performance_metrics": {
+      "avg_steps": 2.142857142857143,
+      "avg_confidence": 0.45714285714285713,
+      "step_distribution": {
+        "4": 3,
+        "5": 5,
+        "0": 7,
+        "2": 2,
+        "1": 4
+      },
+      "confidence_ranges": {
+        "low": 9,
+        "medium": 0,
+        "high": 12
+      }
+    },
+    "error_analysis": {
+      "error_count": 7,
+      "error_types": {
+        "ActionCandidate.__init__() got an unexpected keyword argument 'confidence'": 7
+      }
+    },
+    "dataset_info": {
+      "total_items": 21,
+      "processing_completed": true
+    }
+  }
+}

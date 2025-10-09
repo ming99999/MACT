@@ -1,0 +1,38 @@
+# LangGraph 핵심 패키지
+langgraph>=0.0.40
+langchain>=0.1.0
+langchain-openai>=0.0.8
+langchain-community>=0.0.20
+
+# 상태 관리 및 직렬화
+pydantic>=2.0.0
+typing-extensions>=4.5.0
+
+# 데이터 처리
+pandas>=2.2.2
+numpy>=1.26.4
+
+# LLM 클라이언트
+openai>=1.55.3
+
+# 환경 관리
+python-dotenv>=1.0.0
+
+# 비동기 처리
+aiohttp>=3.8.0
+
+# 기존 MACT 의존성
+pandasql>=0.7.3
+wikipedia>=1.4.0
+nltk>=3.9.1
+tqdm>=4.66.4
+
+# 개발 도구
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+black>=23.0.0
+mypy>=1.0.0
+
+# 선택적 패키지 (시각화)
+graphviz>=0.20.0
+matplotlib>=3.7.0

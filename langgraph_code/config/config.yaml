@@ -1,0 +1,76 @@
+# Configuration file for MACT LangGraph
+
+# Model Configuration
+models:
+  planning:
+    default: "gpt-3.5-turbo"
+    alternatives: ["gpt-4", "gpt-4-turbo"]
+
+  coding:
+    default: "gpt-3.5-turbo"
+    alternatives: ["gpt-4", "gpt-4-turbo"]
+
+# Agent Configuration
+agent:
+  max_steps: 6
+  max_actual_steps: 6
+  plan_sample: 5
+  code_sample: 5
+  reward_type: "consistency"  # consistency, llm, logp, rollout, combined
+  use_pre_answer: true
+  answer_threshold: 1.0
+
+# Tool Configuration
+tools:
+  retriever:
+    enabled: true
+    timeout: 30
+
+  calculator:
+    enabled: true
+    safe_eval: true
+
+  search:
+    enabled: true
+    timeout: 10
+    max_results: 3
+
+  operator:
+    enabled: true
+    timeout: 60
+
+# MMQA Dataset Configuration
+mmqa:
+  validate_items: true
+  skip_invalid: true
+  max_table_size: 1000
+  truncate_long_tables: true
+
+# Execution Configuration
+execution:
+  mode: "async"  # sync or async
+  save_intermediate: false
+  save_every: 10
+  max_concurrent: 5
+  timeout: 300
+
+# Logging Configuration
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "mact_langgraph.log"
+  console: true
+
+# Performance Configuration
+performance:
+  cache_enabled: true
+  cache_size: 1000
+  batch_processing: false
+  batch_size: 10
+
+# Development Configuration
+development:
+  debug_mode: false
+  verbose_logging: false
+  save_intermediate_states: false
+  enable_profiling: false
