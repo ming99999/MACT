@@ -23,6 +23,7 @@ from .nodes.tool_nodes import (
     search_tool_node,
     operator_tool_node
 )
+from .nodes.subtask_nodes import subtask_generation_node
 
 
 def route_action(state: MACTState) -> Literal["retriever_tool", "calculator_tool", "search_tool", "operator_tool", "answer_aggregator"]:
@@ -99,6 +100,7 @@ def create_mact_graph() -> StateGraph:
     workflow.add_node("observer", observer_node)
     workflow.add_node("termination_checker", termination_checker_node)
     workflow.add_node("answer_aggregator", answer_aggregator_node)
+    workflow.add_node("subtask_generator", subtask_generation_node)
 
     # Set entry point
     workflow.set_entry_point("input_processor")
@@ -139,8 +141,11 @@ def create_mact_graph() -> StateGraph:
         }
     )
 
-    # Answer aggregator is the final node
-    workflow.add_edge("answer_aggregator", END)
+    # Answer aggregator goes to subtask generator (Phase 2)
+    workflow.add_edge("answer_aggregator", "subtask_generator")
+
+    # Subtask generator is the final node
+    workflow.add_edge("subtask_generator", END)
 
     # Compile the graph
     # Note: recursion_limit is set at runtime in MACTGraph class

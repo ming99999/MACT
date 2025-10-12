@@ -22,7 +22,7 @@ from ..utils.subtask_extraction import (
 logger = logging.getLogger(__name__)
 
 
-async def subtask_generation_node(state: MACTState) -> Dict[str, Any]:
+async def subtask_generation_node(state: MACTState) -> MACTState:
     """
     Generate SQL, FK, and PK predictions after answer is determined.
 
@@ -98,6 +98,11 @@ async def subtask_generation_node(state: MACTState) -> Dict[str, Any]:
         logger.info(f"Subtask extraction complete: SQL={len(predicted_sql)} chars, "
                    f"FKs={len(predicted_fks)}, PKs={len(predicted_pks)}")
 
+        # Update state with subtask results
+        state['predicted_sql'] = predicted_sql
+        state['predicted_foreign_keys'] = predicted_fks
+        state['predicted_primary_keys'] = predicted_pks
+
         result = {
             'predicted_sql': predicted_sql,
             'predicted_foreign_keys': predicted_fks,
@@ -105,11 +110,11 @@ async def subtask_generation_node(state: MACTState) -> Dict[str, Any]:
         }
 
         print("\n--- Subtask Generation Results ---")
-        print(f"Returning: {result}")
+        print(f"Updated state with: {result}")
         print("="*80 + "\n")
 
-        # Return updated state
-        return result
+        # Return the full updated state
+        return state
 
     except Exception as e:
         print(f"\nERROR in subtask_generation_node: {e}")
@@ -119,14 +124,13 @@ async def subtask_generation_node(state: MACTState) -> Dict[str, Any]:
         logger.error(f"Error in subtask generation: {e}", exc_info=True)
 
         # Return empty predictions on error
-        error_result = {
-            'predicted_sql': '',
-            'predicted_foreign_keys': [],
-            'predicted_primary_keys': []
-        }
-        print(f"Returning error result: {error_result}")
+        state['predicted_sql'] = ''
+        state['predicted_foreign_keys'] = []
+        state['predicted_primary_keys'] = []
+
+        print(f"Returning error result with empty subtasks")
         print("="*80 + "\n")
-        return error_result
+        return state
 
 
 async def validate_subtask_outputs(state: MACTState) -> Dict[str, Any]:

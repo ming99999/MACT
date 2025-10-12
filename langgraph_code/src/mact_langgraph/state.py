@@ -168,6 +168,11 @@ class MACTState(TypedDict):
     total_input_tokens: int
     total_output_tokens: int
 
+    # MMQA Subtask outputs (Phase 2)
+    predicted_sql: str
+    predicted_foreign_keys: List[str]
+    predicted_primary_keys: List[str]
+
 
 def create_initial_state(
     question: str,
@@ -281,7 +286,12 @@ def create_initial_state(
 
         # Token usage
         total_input_tokens=0,
-        total_output_tokens=0
+        total_output_tokens=0,
+
+        # MMQA Subtask outputs (Phase 2)
+        predicted_sql="",
+        predicted_foreign_keys=[],
+        predicted_primary_keys=[]
     )
 
 
