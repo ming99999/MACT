@@ -112,94 +112,101 @@ async def extract_foreign_keys_from_history(
     openai_client: Optional[AsyncOpenAI] = None
 ) -> List[str]:
     """
-    Extract predicted foreign keys from reasoning history.
+    Extract predicted foreign keys using LLM analysis of table schemas.
 
-    This function combines rule-based extraction of JOIN/merge operations with
-    LLM validation to predict foreign key relationships.
+    This function uses pure LLM-based approach (MMQA paper style) to predict
+    foreign key relationships from table structure alone, without relying on
+    code pattern matching.
 
     Args:
-        history: List of step history dictionaries
+        history: List of step history dictionaries (used for context only)
         tables_info: List of table information dictionaries
-        llm_model: Model name to use for validation
+        llm_model: Model name to use for prediction
         openai_client: OpenAI client instance (optional)
 
     Returns:
-        List of predicted foreign key relationships in format "table1.col1 = table2.col2"
+        List of predicted foreign key column names in format "column_name"
     """
     if openai_client is None:
         openai_client = AsyncOpenAI()
 
-    # Step 1: Extract FK candidates from JOIN/merge operations (rule-based)
-    fk_candidates = []
-
-    for step in history:
-        if 'action' in step and step.get('action_type') == 'Operator':
-            code = step.get('code', '')
-
-            # Look for merge operations
-            merge_patterns = [
-                r"merge\([^,]+,\s*[^,]+,\s*(?:left_on|right_on|on)=['\"]([^'\"]+)['\"]",
-                r"join\([^,]+,\s*(?:on|lsuffix|rsuffix)=['\"]([^'\"]+)['\"]"
-            ]
-
-            for pattern in merge_patterns:
-                matches = re.findall(pattern, code)
-                fk_candidates.extend(matches)
-
-    # Remove duplicates
-    fk_candidates = list(set(fk_candidates))
-
-    if not fk_candidates:
-        logger.info("No FK candidates found in history")
-        return []
-
-    # Step 2: Use LLM to validate and format FK relationships
+    # Build comprehensive table information
     table_schemas = []
     for table in tables_info:
         cols = table.get('columns', [])
         table_name = table.get('name', 'table')
-        table_schemas.append(f"{table_name}: {', '.join(cols)}")
+        table_schemas.append(f"Table '{table_name}':\n  Columns: {', '.join(cols)}")
 
-    prompt = f"""Given table schemas and candidate join columns, identify the foreign key column names.
+    # Extract action context from history (optional hint)
+    action_hints = []
+    for step in history:
+        action = step.get('action', '')
+        if 'join' in action.lower() or 'merge' in action.lower():
+            action_hints.append(f"- {action[:100]}")
 
-Table Schemas:
-{chr(10).join(table_schemas)}
+    context_info = ""
+    if action_hints:
+        context_info = f"\n\nReasoning context (operations performed):\n" + "\n".join(action_hints[:3])
 
-Candidate Join Columns:
-{chr(10).join(fk_candidates)}
+    # Pure LLM-based FK extraction prompt (MMQA style)
+    prompt = f"""Analyze the database schema and identify foreign key columns.
 
-IMPORTANT: Return ONLY the column names that are foreign keys, one per line.
-Format: Use lowercase with spaces instead of underscores (e.g., "department id" not "department_id").
-Do NOT include table names or equals signs. Just the column names.
-Examples: "head id", "department id", "employee id"
-"""
+{chr(10).join(table_schemas)}{context_info}
+
+Task: Identify which columns are foreign keys (columns that reference primary keys in other tables).
+
+Instructions:
+1. Look for columns with similar names across tables (e.g., "department_id" in both tables)
+2. Common FK patterns: *_id, *_ID, id columns that appear in multiple tables
+3. Return ONLY the column names, one per line
+4. Format: lowercase with spaces instead of underscores (e.g., "department id" not "department_id")
+5. Do NOT include table names, just column names
+6. If no clear foreign keys exist, return "NONE"
+
+Examples of correct output:
+department id
+head id
+employee id
+
+Output (column names only):"""
 
     try:
         response = await openai_client.chat.completions.create(
             model=llm_model,
             messages=[
-                {"role": "system", "content": "You are a database schema expert."},
+                {"role": "system", "content": "You are an expert database schema analyst. Identify foreign key columns based on table structure and naming patterns."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0.0,
-            max_tokens=300
+            max_tokens=200
         )
 
         fks_text = response.choices[0].message.content.strip()
+
+        # Handle "NONE" case
+        if fks_text.upper() == "NONE" or not fks_text:
+            logger.info("No foreign keys identified by LLM")
+            return []
+
         # Extract column names, convert underscores to spaces, make lowercase
         fks = []
         for line in fks_text.split('\n'):
             line = line.strip()
-            if line and not line.startswith('#'):
+            if line and not line.startswith('#') and line.upper() != "NONE":
                 # Remove any table prefixes (table.column -> column)
                 if '.' in line:
                     line = line.split('.')[-1]
                 # Remove any = signs and take first part
                 if '=' in line:
                     line = line.split('=')[0].strip()
+                # Remove bullet points or numbering
+                line = re.sub(r'^[\d\-\*\•\.]+\s*', '', line)
                 # Convert underscore to space and lowercase
                 line = line.replace('_', ' ').lower().strip()
-                if line:
+                # Remove any parenthetical explanations
+                if '(' in line:
+                    line = line.split('(')[0].strip()
+                if line and len(line.split()) <= 3:  # Sanity check: FK names shouldn't be too long
                     fks.append(line)
 
         # Remove duplicates while preserving order
