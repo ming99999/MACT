@@ -1,0 +1,56 @@
+{
+  "experiment_info": {
+    "timestamp": "2025-10-12T17:16:04.034951",
+    "config": {
+      "plan_model": "gpt-3.5-turbo",
+      "code_model": "gpt-3.5-turbo",
+      "reward_type": "consistency",
+      "plan_sample": 5,
+      "code_sample": 5,
+      "max_steps": 6,
+      "max_actual_steps": 6,
+      "use_pre_answer": true,
+      "answer_threshold": 1.0,
+      "long_table_op": "ignore",
+      "code_as_observation": false,
+      "without_tool": false,
+      "use_examples": true,
+      "experiment_metadata": {
+        "dataset_path": "/Users/m9/Desktop/OMSCS/25FALL/CS8903/Works/cs8903_benchmark/MACT/datasets_examples/mmqa_samples.json",
+        "dataset_size": 3,
+        "total_execution_time": 43.041329860687256,
+        "processing_date": "2025-10-12 17:16:04"
+      }
+    }
+  },
+  "metrics": {
+    "basic_metrics": {
+      "exact_match": 0.0,
+      "accuracy": 0.0,
+      "correct": 0,
+      "total": 3,
+      "error_rate": 0.0
+    },
+    "performance_metrics": {
+      "avg_steps": 4.0,
+      "avg_confidence": 0.26666666666666666,
+      "step_distribution": {
+        "5": 2,
+        "2": 1
+      },
+      "confidence_ranges": {
+        "low": 2,
+        "medium": 0,
+        "high": 1
+      }
+    },
+    "error_analysis": {
+      "error_count": 0,
+      "error_types": {}
+    },
+    "dataset_info": {
+      "total_items": 3,
+      "processing_completed": true
+    }
+  }
+}
