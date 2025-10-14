@@ -13,6 +13,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from multi_agent.graph import MultiAgentGraph
 from multi_agent.state import create_multi_agent_initial_state
+from multi_agent.utils.env_utils import load_env_config
+
+# Load environment variables from .env file
+load_env_config()
 
 
 async def test_single_question():

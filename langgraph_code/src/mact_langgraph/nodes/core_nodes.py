@@ -15,6 +15,13 @@ import os
 from typing import List, Dict, Any
 from collections import Counter
 from langchain_openai import ChatOpenAI
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+env_file = Path(__file__).parent.parent.parent.parent / '.env'
+if env_file.exists():
+    load_dotenv(env_file)
 
 from ..state import (
     MACTState, ActionType, ActionCandidate, RewardType,
@@ -136,6 +143,7 @@ def create_llm(model_name: str) -> ChatOpenAI:
     # Check if RunPod should be used
     runpod_api_key = os.getenv("RUNPOD_API_KEY")
     runpod_base_url = os.getenv("RUNPOD_BASE_URL")
+    openai_api_key = os.getenv("OPENAI_API_KEY")
 
     if runpod_api_key and runpod_base_url and model_name.startswith("runpod"):
         # Use RunPod vLLM endpoint - support cold start with longer timeout
@@ -172,10 +180,16 @@ def create_llm(model_name: str) -> ChatOpenAI:
             print("🛑 Experiment terminated. Please check RunPod endpoint and try again.")
             exit(1)
     else:
-        # Use OpenAI API
+        # Use OpenAI API - explicitly pass API key
         print(f"🌐 Using OpenAI API with model: {model_name}")
+        if not openai_api_key:
+            raise ValueError(
+                "OPENAI_API_KEY not found in environment. "
+                "Please set it in .env file or environment variables."
+            )
         return ChatOpenAI(
             model=model_name,
+            api_key=openai_api_key,
             temperature=0.1,
             max_tokens=2048,
             timeout=60

@@ -37,8 +37,12 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from multi_agent.graph import MultiAgentGraph
 from multi_agent.state import create_multi_agent_initial_state
+from multi_agent.utils.env_utils import load_env_config, print_api_status
 from mact_langgraph.utils.mmqa_utils import load_mmqa_dataset
 from mact_langgraph.utils.result_utils import save_prediction_item
+
+# Load environment variables from .env file
+load_env_config()
 
 
 async def run_multi_agent_on_dataset(
