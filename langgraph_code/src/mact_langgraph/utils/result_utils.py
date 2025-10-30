@@ -79,6 +79,13 @@ def save_prediction_item(item_result: Dict[str, Any], predictions_file: str) -> 
             "sql_reference": item_result.get("sql_reference", "")
         })
 
+    # MMQA Subtask outputs (Phase 2)
+    prediction_item.update({
+        "predicted_sql": item_result.get("predicted_sql", ""),
+        "predicted_foreign_keys": item_result.get("predicted_foreign_keys", []),
+        "predicted_primary_keys": item_result.get("predicted_primary_keys", [])
+    })
+
     # Append to JSONL file
     with open(predictions_file, "a", encoding="utf-8") as f:
         f.write(json.dumps(prediction_item, ensure_ascii=False) + "\n")

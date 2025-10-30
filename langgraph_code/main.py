@@ -91,7 +91,12 @@ async def process_single_item(item: Dict[str, Any], config: Dict[str, Any], grap
             'error_message': final_state.get('error_message', ''),
             'scratchpad': final_state.get('scratchpad', ''),
             'sql_reference': item.get('sql', ''),  # Reference SQL (not used in execution)
-            'original_item': item.get('original_item', {})
+            'original_item': item.get('original_item', {}),
+
+            # MMQA Subtask outputs (Phase 2)
+            'predicted_sql': final_state.get('predicted_sql', ''),
+            'predicted_foreign_keys': final_state.get('predicted_foreign_keys', []),
+            'predicted_primary_keys': final_state.get('predicted_primary_keys', [])
         }
 
         return result
